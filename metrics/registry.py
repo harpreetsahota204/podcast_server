@@ -16,6 +16,7 @@ BUILTIN_COLLECTORS: dict[str, str] = {
     "op3": "metrics.collectors.op3:OP3Collector",
     "cloudflare": "metrics.collectors.cloudflare:CloudflareCollector",
     "x": "metrics.collectors.x:XCollector",
+    "youtube": "metrics.collectors.youtube:YouTubeCollector",
 }
 
 

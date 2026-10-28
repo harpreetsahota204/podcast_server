@@ -16,6 +16,7 @@ from typing import Any
 
 from core.config import settings
 from core.formatting import validate_slug
+from core.jsonl import append_record, read_records
 from core.media_uploader import MEDIA_CONTENT_TYPES
 
 # xurl colors its JSON when it thinks stdout is a terminal; a stray color code would break parsing.
@@ -128,17 +129,7 @@ def read_post_log() -> list[dict[str, Any]]:
     The X metrics collector reads only these posts, so analytics cover exactly what
     went out through the engine.
     """
-    if not settings.x_post_log_path.exists():
-        return []
-    records = []
-    for line in settings.x_post_log_path.read_text(encoding="utf-8").splitlines():
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(record, dict) and record.get("tweet_id"):
-            records.append(record)
-    return records
+    return [r for r in read_records(settings.x_post_log_path) if r.get("tweet_id")]
 
 
 def post_to_x(
@@ -173,10 +164,6 @@ def post_to_x(
 
     # The post is already live here. A log failure must not raise, or an agent may retry and post twice.
     record = {"posted_at": datetime.now(UTC).isoformat(), **result, "text": body}
-    try:
-        settings.x_post_log_path.parent.mkdir(parents=True, exist_ok=True)
-        with settings.x_post_log_path.open("a", encoding="utf-8") as log:
-            log.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except OSError as exc:
-        result["log_error"] = str(exc)
+    if log_error := append_record(settings.x_post_log_path, record):
+        result["log_error"] = log_error
     return result

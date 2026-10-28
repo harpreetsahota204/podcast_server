@@ -142,7 +142,7 @@
   <div class="table-wrap"><table id="episodes"></table></div>
   <button class="more" id="episodes-more" type="button" hidden></button>
 
-  <div id="posts-section"></div>
+  <div id="items-section"></div>
 
   <h2>Sources</h2>
   <ul class="sources" id="sources"></ul>
@@ -425,18 +425,20 @@ function renderEpisodes() {
   });
 }
 
-function renderPosts() {
-  const section = document.getElementById("posts-section");
-  for (const t of DATA.posts) {
+// One table per source and item type (X posts, YouTube videos, ...).
+function renderItems() {
+  const section = document.getElementById("items-section");
+  for (const t of DATA.items) {
     if (!t.rows.length) continue;
-    section.append(el("h2", {}, `Posts · ${t.source}`));
+    const noun = t.entity_type.charAt(0).toUpperCase() + t.entity_type.slice(1);
+    section.append(el("h2", {}, `${noun}s · ${t.source}`));
     const wrap = el("div", { class: "table-wrap" });
     const table = el("table");
     wrap.append(table);
     section.append(wrap);
     const cols = [
-      { key: "created_at", label: "Posted", get: (r) => r.created_at, render: (r) => (r.created_at || "").slice(0, 10) },
-      { key: "label", label: "Post", get: (r) => r.label, render: (r) => {
+      { key: "created_at", label: "Published", get: (r) => r.created_at, render: (r) => (r.created_at || "").slice(0, 10) },
+      { key: "label", label: noun, get: (r) => r.label, render: (r) => {
           const href = safeHref(r.url);
           return href ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, r.label || "(no text)") : (r.label || "");
         } },
@@ -472,7 +474,7 @@ renderWaveTabs();
 renderMoreCharts();
 renderBreakdowns();
 renderEpisodes();
-renderPosts();
+renderItems();
 renderSources();
 </script>
 </body>

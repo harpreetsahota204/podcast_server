@@ -308,14 +308,16 @@ def podcast_publish_to_youtube(
     description: str,
     tags: list[str] | None = None,
     privacy_status: PrivacyStatus = "unlisted",
+    episode_slug: str | None = None,
 ) -> dict[str, Any]:
-    """Upload a video to the authenticated YouTube channel using resumable chunked upload."""
+    """Upload a video to the authenticated YouTube channel using resumable chunked upload. Pass episode_slug so the video's metrics are credited to that episode."""
     return upload_video_to_youtube(
         video_path=video_path,
         title=title,
         description=description,
         tags=tags,
         privacy_status=privacy_status,
+        episode_slug=episode_slug,
     )
 
 

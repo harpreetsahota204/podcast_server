@@ -29,7 +29,7 @@ Podcast hosting services charge monthly for object storage, a database table, an
 | `core/doctor.py` | End-to-end setup check. |
 | `importers/` | `rss.py` (any host, GUID-preserving), `descript.py` (staging, chapters). |
 | `exporters/` | Astro Markdown pages, blog posts, social templates, X posting (via xurl), YouTube. |
-| `metrics/` | Audience metrics: `collectors/` (OP3, Cloudflare, X; plugins via `METRICS_EXTRA_COLLECTORS`), `store.py` (`metrics.db`), `analysis.py`, `report.py` (offline HTML dashboard), `collect.py` (CLI + scheduler entry). |
+| `metrics/` | Audience metrics: `collectors/` (OP3, Cloudflare, X, YouTube; plugins via `METRICS_EXTRA_COLLECTORS`), `store.py` (`metrics.db`), `analysis.py`, `report.py` (offline HTML dashboard), `collect.py` (CLI + scheduler entry). |
 
 ### Metrics Pipeline
 
@@ -98,8 +98,8 @@ CREATE TABLE collection_runs (id, source, started_at, finished_at, status, windo
 | Site modes `none` / `astro`, scoped deploy | Done |
 | GUID-preserving RSS import + audio mirroring | Done |
 | Setup doctor, HF backups, exclusion list | Done |
-| Audience metrics: OP3 / Cloudflare / X collectors, plugin contract, dashboard, MCP tools | Done |
-| Metrics: YouTube Analytics, Apple/Spotify CSV import collectors | Planned |
+| Audience metrics: OP3 / Cloudflare / X / YouTube collectors, plugin contract, dashboard, MCP tools | Done |
+| Metrics: Apple/Spotify CSV import collectors | Planned |
 | Transcription, vector index, semantic search | Planned |
 
 ## Roadmap

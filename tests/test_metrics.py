@@ -458,7 +458,7 @@ class PipelineTests(TempDirTestCase):
                 failed = run_one(store, BrokenCollector(), make_index(), TODAY, 3)
             ok = run_one(store, ReadyCollector(), make_index(), TODAY, 3)
             self.assertEqual((failed["status"], ok["status"]), ("failed", "ok"))
-            self.assertIn("service down", store.recent_runs()[1]["message"])
+            self.assertIn("service down", store.latest_runs()["broken"]["message"])
             self.assertEqual(store.daily_series("ready", "widgets", "2026-03-01", "2026-03-11"), {"2026-03-08": 7})
 
     def test_unconfigured_source_is_skipped(self) -> None:
@@ -467,7 +467,7 @@ class PipelineTests(TempDirTestCase):
             result = run_one(store, CloudflareCollector(), make_index(), TODAY, None)
             self.assertEqual(result["status"], "skipped")
             self.assertIn("CLOUDFLARE_API_TOKEN", result["message"])
-            self.assertEqual(store.recent_runs(), [])
+            self.assertEqual(store.latest_runs(), {})
 
     def test_extra_collectors_load_by_import_path(self) -> None:
         """METRICS_EXTRA_COLLECTORS plugs in classes; bad paths and unknown names fail clearly."""
@@ -479,6 +479,113 @@ class PipelineTests(TempDirTestCase):
             load_collector_class("no_colon_here")
         with self.assertRaises(TypeError):
             load_collector_class("metrics.models:Observation")
+
+
+class YouTubeTests(TempDirTestCase):
+    """Only tracked videos are measured; daily analytics appear only when the token has that scope."""
+
+    CHANNEL = {"items": [{"id": "UC1", "snippet": {"title": "Show Channel"},
+                          "statistics": {"subscriberCount": "900", "viewCount": "50000", "videoCount": "40"}}]}
+
+    def setUp(self) -> None:
+        """Point the data dir (mapping file and upload log) into the temp dir."""
+        super().setUp()
+        self._saved_data_dir = settings.data_dir
+        settings.data_dir = self.tmp
+
+    def tearDown(self) -> None:
+        """Restore the data dir."""
+        settings.data_dir = self._saved_data_dir
+        super().tearDown()
+
+    def track(self) -> None:
+        """v1 → ep-a from the mapping file; v2 gains ep-b from the upload log; v3 is an upload with no episode."""
+        settings.youtube_videos_file.write_text(json.dumps({"videos": [
+            {"video_id": "v1", "episode_slug": "ep-a"}, {"video_id": "v2", "episode_slug": None}]}))
+        settings.youtube_upload_log_path.parent.mkdir(parents=True)
+        settings.youtube_upload_log_path.write_text(
+            json.dumps({"video_id": "v2", "episode_slug": "ep-b"}) + "\n"
+            + json.dumps({"video_id": "v3"}) + "\n" + '{"video_id": "torn\n'
+        )
+
+    def youtube_mock(self, videos: list[dict[str, Any]]) -> mock.MagicMock:
+        """A Data API client returning the test channel and `videos` from one videos.list call."""
+        youtube = mock.MagicMock()
+        youtube.channels.return_value.list.return_value.execute.return_value = self.CHANNEL
+        youtube.videos.return_value.list.return_value.execute.return_value = {"items": videos}
+        return youtube
+
+    @staticmethod
+    def video(video_id: str, **stats: str) -> dict[str, Any]:
+        """A videos.list item with the given statistics."""
+        return {"id": video_id, "snippet": {"title": f"Video {video_id}", "publishedAt": "2026-03-01T00:00:00Z"},
+                "statistics": stats}
+
+    def test_tracked_videos_merge_mapping_and_upload_log(self) -> None:
+        """The upload log adds videos and fills slugs; torn lines are skipped."""
+        from exporters.youtube import read_tracked_videos
+
+        self.track()
+        self.assertEqual(read_tracked_videos(), {"v1": "ep-a", "v2": "ep-b", "v3": None})
+
+    def test_without_analytics_scope_records_lifetime_counts(self) -> None:
+        """Data API counts become snapshots linked to episodes; hidden counts are skipped; the scope gap is noted."""
+        from metrics.collectors.youtube import YouTubeCollector
+
+        self.track()
+        youtube = self.youtube_mock([self.video("v1", viewCount="120", commentCount="4")])
+        collector = YouTubeCollector()
+        with mock.patch.object(collector, "services", return_value=(youtube, None)):
+            result = collector.collect(make_ctx())
+        values = {(o.entity_id, o.metric): o.value for o in result.observations}
+        self.assertEqual(values[("UC1", "subscribers")], 900)
+        self.assertEqual(values[("v1", "lifetime_views")], 120)
+        self.assertNotIn(("v1", "likes"), values)
+        self.assertEqual([e.episode_slug for e in result.entities if e.entity_type == "video"], ["ep-a"])
+        self.assertEqual(result.notes[0], "1 of 3 tracked videos found")
+        self.assertIn("yt-analytics.readonly", result.notes[1])
+        self.assertIsNone(result.replace_start)
+        # Only tracked ids are requested from the Data API.
+        self.assertEqual(youtube.videos.return_value.list.call_args.kwargs["id"], "v1,v2,v3")
+
+    def test_with_analytics_scope_adds_daily_metrics(self) -> None:
+        """One query per tracked video; show totals sum them; the last week is always re-fetched."""
+        from metrics.collectors.youtube import YouTubeCollector
+
+        settings.youtube_videos_file.write_text(json.dumps({"videos": [
+            {"video_id": "v1", "episode_slug": "ep-a"}, {"video_id": "v2", "episode_slug": "ep-b"}]}))
+        analytics = mock.MagicMock()
+        analytics.reports.return_value.query.return_value.execute.side_effect = [
+            {"rows": [["2026-03-08", 5, 12.5, 1]]}, {"rows": [["2026-03-08", 3, 4, 0]]},
+        ]
+        collector = YouTubeCollector()
+        ctx = make_ctx(start=date(2026, 3, 9))
+        with mock.patch.object(collector, "services", return_value=(self.youtube_mock([]), analytics)):
+            result = collector.collect(ctx)
+        query = analytics.reports.return_value.query.call_args_list[0].kwargs
+        self.assertEqual((query["startDate"], query["endDate"], query["filters"]), ("2026-03-03", "2026-03-10", "video==v1"))
+        self.assertEqual((result.replace_start, result.replace_end), ("2026-03-03", "2026-03-11"))
+        values = {(o.entity_id, o.metric, o.period): o.value for o in result.observations if o.granularity == "day"}
+        self.assertEqual(values[("v1", "watch_minutes", "2026-03-08")], 12.5)
+        self.assertEqual(values[("", "views", "2026-03-08")], 8)
+
+    def test_upload_logs_video_with_episode(self) -> None:
+        """A finished upload is logged with its episode; a bad slug is refused before YouTube is contacted."""
+        from exporters.youtube import upload_video_to_youtube
+
+        video_file = self.tmp / "ep.mp4"
+        video_file.write_bytes(b"\x00" * 10)
+        service = mock.MagicMock()
+        service.videos.return_value.insert.return_value.next_chunk.return_value = (
+            None, {"id": "new1", "snippet": {"title": "T"}, "status": {"privacyStatus": "unlisted"}})
+        with mock.patch("exporters.youtube.get_authenticated_youtube_service", return_value=service) as get_service, \
+                mock.patch("exporters.youtube.MediaFileUpload"):
+            with self.assertRaises(ValueError):
+                upload_video_to_youtube(str(video_file), "T", "D", episode_slug="../bad")
+            get_service.assert_not_called()
+            upload_video_to_youtube(str(video_file), "T", "D", episode_slug="ep-a")
+        logged = json.loads(settings.youtube_upload_log_path.read_text())
+        self.assertEqual((logged["video_id"], logged["episode_slug"]), ("new1", "ep-a"))
 
 
 class AnalysisAndReportTests(TempDirTestCase):
@@ -531,7 +638,7 @@ class AnalysisAndReportTests(TempDirTestCase):
         self.assertIsNone(rows["ep-a"]["op3.downloads.launch"])
         self.assertEqual(rows["ep-b"]["op3.downloads.launch"], 6)
         self.assertEqual(rows["ep-b"]["x.impressions"], 80)
-        self.assertEqual(episode_metrics("ep-b")["posts"][0]["values"], {"impressions": 80})
+        self.assertEqual(episode_metrics("ep-b")["linked_items"][0]["values"], {"impressions": 80})
 
     def test_report_embeds_hostile_text_safely(self) -> None:
         """Post text can't close the data script; the page still carries the data."""
@@ -540,7 +647,7 @@ class AnalysisAndReportTests(TempDirTestCase):
         html = write_report(days=30, path=self.tmp / "dash.html").read_text()
         data_block = html.split('id="dashboard-data" type="application/json">', 1)[1].split("</script>", 1)[0]
         self.assertNotIn("<script>", data_block)
-        self.assertEqual(json.loads(data_block)["posts"][0]["rows"][0]["label"], "</script><script>alert(1)</script>")
+        self.assertEqual(json.loads(data_block)["items"][0]["rows"][0]["label"], "</script><script>alert(1)</script>")
 
 
 if __name__ == "__main__":

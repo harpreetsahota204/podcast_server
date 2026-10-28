@@ -224,9 +224,10 @@ class CloudflareCollector(Collector):
             result.notes.append(f"started at {window.start_iso}: the plan keeps {retention_days} days of request data")
 
         host = urlparse(settings.r2_public_domain).hostname or ""
+        path_prefix = ctx.episodes.audio_path_prefix()
         path_rows, country_rows = [], []
         for chunk in window.chunks(max_days):
-            zone = self._fetch_chunk(chunk, host, ctx.episodes.audio_path_prefix())
+            zone = self._fetch_chunk(chunk, host, path_prefix)
             for name, rows in (("paths", zone["paths"]), ("countries", zone["countries"])):
                 if len(rows) >= ROW_LIMIT:
                     result.notes.append(f"{chunk.start_iso}..{chunk.end_iso} hit the {ROW_LIMIT}-row cap for {name}")

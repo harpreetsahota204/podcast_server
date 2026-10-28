@@ -167,10 +167,12 @@ class MetricsStore:
         ).fetchone()
         return row[0] if row else None
 
-    def recent_runs(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Newest collector runs first."""
-        rows = self.conn.execute("SELECT * FROM collection_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        return [dict(row) for row in rows]
+    def latest_runs(self) -> dict[str, dict[str, Any]]:
+        """Each source's most recent run: source → run row."""
+        rows = self.conn.execute(
+            "SELECT * FROM collection_runs WHERE id IN (SELECT MAX(id) FROM collection_runs GROUP BY source)"
+        ).fetchall()
+        return {row["source"]: dict(row) for row in rows}
 
     def metric_inventory(self) -> list[dict[str, Any]]:
         """Every (source, metric, granularity, entity_type) present, with its date coverage."""
@@ -182,20 +184,17 @@ class MetricsStore:
         """).fetchall()
         return [dict(row) for row in rows]
 
-    def daily_series(
-        self, source: str, metric: str, start: str, end: str, entity_type: str = SHOW, entity_id: str | None = None
-    ) -> dict[str, float]:
-        """Day totals (no breakdown) per date in [start, end); sums across entities unless `entity_id` is given."""
-        sql = """
+    def daily_series(self, source: str, metric: str, start: str, end: str) -> dict[str, float]:
+        """Show-level day totals (no breakdown) per date in [start, end)."""
+        rows = self.conn.execute(
+            """
             SELECT period, SUM(value) FROM observations
             WHERE source = ? AND metric = ? AND granularity = 'day' AND dimension = ''
               AND entity_type = ? AND period >= ? AND period < ?
-        """
-        params: list[Any] = [source, metric, entity_type, start, end]
-        if entity_id is not None:
-            sql += " AND entity_id = ?"
-            params.append(entity_id)
-        rows = self.conn.execute(sql + " GROUP BY period ORDER BY period", params).fetchall()
+            GROUP BY period ORDER BY period
+            """,
+            (source, metric, SHOW, start, end),
+        ).fetchall()
         return {row[0]: row[1] for row in rows}
 
     def dimension_totals(self, source: str, metric: str, start: str, end: str, kind: str) -> list[tuple[str, float]]:
@@ -250,19 +249,23 @@ class MetricsStore:
         ).fetchall()
         return {row[0]: row[1] for row in rows}
 
-    def latest_snapshots(self, source: str, metric: str, entity_type: str) -> dict[str, tuple[float, str]]:
-        """Newest snapshot reading per entity: entity_id → (value, period)."""
+    def latest_snapshots(
+        self, source: str, metric: str, entity_type: str, before: str | None = None
+    ) -> dict[str, tuple[float, str]]:
+        """Newest snapshot reading per entity (only readings dated before `before`, if given): id → (value, period)."""
+        cutoff = before or "9999-12-31"
         rows = self.conn.execute(
             """
             SELECT o.entity_id, o.value, o.period FROM observations o
             JOIN (
                 SELECT entity_id, MAX(period) AS period FROM observations
                 WHERE source = ? AND metric = ? AND granularity = 'snapshot' AND entity_type = ? AND dimension = ''
+                  AND period < ?
                 GROUP BY entity_id
             ) latest ON latest.entity_id = o.entity_id AND latest.period = o.period
             WHERE o.source = ? AND o.metric = ? AND o.granularity = 'snapshot' AND o.entity_type = ? AND o.dimension = ''
             """,
-            (source, metric, entity_type, source, metric, entity_type),
+            (source, metric, entity_type, cutoff, source, metric, entity_type),
         ).fetchall()
         return {row[0]: (row[1], row[2]) for row in rows}
 

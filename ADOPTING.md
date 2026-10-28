@@ -135,17 +135,20 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
 ## Optional Integrations
 
 **YouTube uploads** (`podcast_publish_to_youtube`):
-1. In Google Cloud Console, create a project, enable **YouTube Data API v3**, and create an **OAuth client ID** of type *Desktop app*. Download it as `client_secret.json`.
-2. Authorize once (opens a browser) to produce the token file the engine reads:
-
+1. In Google Cloud Console, create a project, enable **YouTube Data API v3** (and **YouTube Analytics API** if you want daily views and watch time in the metrics), and create an **OAuth client ID** of type *Desktop app*. Download it as `client_secret.json`.
+2. Authorize once (opens a browser) to produce the token file the engine reads. Drop the last two scopes if you only want uploads:
+   
    ```bash
    uv run --with google-auth-oauthlib python -c "
    from google_auth_oauthlib.flow import InstalledAppFlow
-   flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', ['https://www.googleapis.com/auth/youtube.upload'])
+   scopes = ['https://www.googleapis.com/auth/youtube.upload',
+             'https://www.googleapis.com/auth/youtube.readonly',          # metrics: lifetime counts
+             'https://www.googleapis.com/auth/yt-analytics.readonly']     # metrics: daily views, watch time
+   flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', scopes)
    open('youtube_token.json', 'w').write(flow.run_local_server(port=0).to_json())"
    ```
 
-3. Move `youtube_token.json` somewhere private, `chmod 600` it, and set `YOUTUBE_TOKEN_PATH` in `.env`. Uploads default to `unlisted`.
+3. Move `youtube_token.json` somewhere private, `chmod 600` it, and set `YOUTUBE_TOKEN_PATH` in `.env`. Uploads default to `unlisted`; pass `episode_slug` so the video's metrics are credited to its episode (uploads are logged to `$DATA_DIR/social/youtube_uploads.jsonl`).
 
 **Descript staging** (`podcast_stage_from_descript`): the tool takes the episode's transcript exported from Descript as Markdown (markers such as `[00:12:30] Chapter title` or timestamped headings become chapters), plus either the published audio's download URL or a local MP3 path. Set `DESCRIPT_API_BEARER` only if your download URLs require authentication; it's sent to `descript.com` hosts only.
 
@@ -169,6 +172,7 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
 | OP3 | Bot-filtered downloads per day and episode; listening apps, countries, devices | `USE_OP3_PREFIX=true` (publicly visible stats), then create a free key at [op3.dev/api/keys](https://op3.dev/api/keys) and set `OP3_API_TOKEN`. The show is looked up by `<podcast:guid>` (set `OP3_SHOW_UUID` to skip the lookup). OP3 starts counting about a day after your feed carries the prefix. |
 | Cloudflare | Audio requests, bytes served, and estimated full listens per episode, from every client (including ones OP3 never sees) | A Cloudflare API token with **Zone → Analytics → Read** on the zone serving `R2_PUBLIC_DOMAIN`; set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ZONE_ID`. The free plan keeps about 30 days, so schedule collection. |
 | X | Followers, plus impressions, likes, reposts, and (with xurl) link clicks and engagements for **only the posts published through `podcast_post_to_x`**, credited to their episode | Same setup as posting to X. Post ids come from the post log, so the timeline is never scanned and a run costs about one read per 100 posts. Posts newer than `X_LOOKBACK_DAYS` (30) are refreshed each run. Without xurl: `X_BEARER_TOKEN` + `X_USERNAME` for public counts. |
+| YouTube | Subscribers and lifetime views, likes, comments per video; with the Analytics scope, daily views, watch minutes, and subscribers gained. **Only the show's videos**: uploads made with `podcast_publish_to_youtube`, plus any you list | The YouTube token above with `youtube.readonly` (and `yt-analytics.readonly` for daily numbers). For videos uploaded another way, add `$DATA_DIR/youtube_videos.json`: `{"videos": [{"video_id": "abc123", "episode_slug": "my-episode"}]}`. Quota: one Data API call per 50 videos plus one Analytics query per video. |
 
 Collect and write the dashboard (`$DATA_DIR/metrics/dashboard.html`, a single offline file):
 

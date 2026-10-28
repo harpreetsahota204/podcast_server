@@ -12,7 +12,7 @@ A self-hosted podcast publishing engine that AI agents operate through MCP (Mode
 - **Two site modes:** `none` serves the feed from your R2 domain, with no website needed. `astro` writes one Markdown page per episode into your site repo and pushes only those files.
 - **Migration:** a GUID-preserving importer for any host's RSS feed, with audio mirrored into R2.
 - **Agent surface:** 17 MCP tools covering staging (including Descript), publishing, blog posts, social drafts and X posts, media uploads, YouTube, and audience metrics.
-- **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X engagement, or your own) feed a local SQLite store, an offline HTML dashboard, and MCP tools agents can query.
+- **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X and YouTube engagement for the show's own posts and videos, or your own) feed a local SQLite store, an offline HTML dashboard, and MCP tools agents can query.
 - **Safety:** see the list below; checks run before any upload.
 - **Backups:** incremental, to a private Hugging Face dataset.
 
@@ -53,7 +53,7 @@ flowchart LR
 | :--- | :--- | :--- |
 | [Descript](https://www.descript.com) | Staging episodes straight from a Descript export (chapters from markers) | Export the transcript as Markdown; see ADOPTING. |
 | X developer app + [xurl](https://github.com/xdevplatform/xurl) | `podcast_post_to_x` and X metrics for those posts | An app in the [X developer portal](https://developer.x.com) (read and write, OAuth 2.0); X bills API use. Steps in ADOPTING. |
-| YouTube Data API | `podcast_publish_to_youtube` | A Google Cloud OAuth client ([API docs](https://developers.google.com/youtube/v3)). |
+| YouTube Data + Analytics APIs | `podcast_publish_to_youtube`, and YouTube metrics for the show's videos | A Google Cloud OAuth client ([Data API](https://developers.google.com/youtube/v3), [Analytics API](https://developers.google.com/youtube/analytics)). |
 | [OP3](https://op3.dev) | Free, open download analytics (stats are public) | `USE_OP3_PREFIX=true` and a free API key. |
 | Cloudflare analytics token | Audio-traffic metrics from the edge | A token with Zone → Analytics → Read. |
 | Hugging Face account | Private, incremental backups of audio and catalog | A private dataset; Hugging Face also offers an [MCP server](https://huggingface.co/settings/mcp). |
@@ -85,7 +85,7 @@ Every setting is documented inline in [`.env.example`](./.env.example).
 | Show data | `DATA_DIR` (catalog, transcripts, templates, playbook, backups) |
 | Integrations (optional) | `DESCRIPT_API_BEARER`, `YOUTUBE_TOKEN_PATH`, `HF_BACKUP_REPO`, `THUMBNAIL_STYLE`, `DEFAULT_TAGS`, `PODCAST_GUID` |
 | X posting (optional) | `X_USERNAME`, `XURL_APP`, `XURL_PATH` (tokens stay in xurl's own auth file) |
-| Metrics (optional) | `OP3_API_TOKEN`, `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID`, X via the posting setup (or `X_BEARER_TOKEN`), `X_LOOKBACK_DAYS`, `METRICS_SOURCES`, `METRICS_EXTRA_COLLECTORS`, `METRICS_BACKFILL_DAYS` |
+| Metrics (optional) | `OP3_API_TOKEN`, `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID`, X via the posting setup (or `X_BEARER_TOKEN`), `X_LOOKBACK_DAYS`, YouTube via `YOUTUBE_TOKEN_PATH` (+ `$DATA_DIR/youtube_videos.json`), `METRICS_SOURCES`, `METRICS_EXTRA_COLLECTORS`, `METRICS_BACKFILL_DAYS` |
 
 There are no show values in the code: startup fails and lists any required variable that's missing. `PODCAST_SERVER_ENV_FILE=/path/to/show.env` selects a different config (one per show).
 

@@ -184,6 +184,16 @@ class Settings(BaseSettings):
         return self.data_dir / "metrics" / "dashboard.html"
 
     @property
+    def youtube_upload_log_path(self) -> Path:
+        """Append-only record of every video podcast_publish_to_youtube uploaded (one JSON object per line)."""
+        return self.data_dir / "social" / "youtube_uploads.jsonl"
+
+    @property
+    def youtube_videos_file(self) -> Path:
+        """Optional mapping of the show's other YouTube videos to episodes, for metrics on a back catalog."""
+        return self.data_dir / "youtube_videos.json"
+
+    @property
     def x_post_log_path(self) -> Path:
         """Append-only record of every post X accepted (one JSON object per line)."""
         return self.data_dir / "social" / "x_posts.jsonl"

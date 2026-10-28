@@ -12,10 +12,12 @@ from typing import Any
 
 from core.config import settings
 from metrics.episodes import EpisodeIndex
-from metrics.models import ACCOUNT, EPISODE, POST, SHOW, MetricSpec
+from metrics.models import ACCOUNT, SHOW, MetricSpec
 from metrics.registry import metric_specs
 from metrics.store import MetricsStore
 
+# Entity types that describe the whole show or account rather than one item (episode, post, video).
+UNLINKED = (SHOW, ACCOUNT)
 # "First N days after release" columns: the standard launch-performance yardstick.
 LAUNCH_DAYS = 7
 TOP_BREAKDOWN_ROWS = 10
@@ -51,8 +53,8 @@ def headline_numbers(store: MetricsStore, specs: Specs, days: int, today: date) 
     """Top-line numbers for headline metrics, each compared with the window before it.
 
     Day metrics are summed over the window. Account snapshots (e.g. followers) report the
-    latest reading. Post snapshots sum each post's latest reading, for posts created in
-    the window, so "impressions" means "impressions on what you posted this period".
+    latest reading. Item snapshots (post impressions, video lifetime views) sum every
+    tracked item's latest reading, compared with the same sum just before the window.
     """
     prev_start, start, end = _windows(days, today)
     numbers = []
@@ -69,16 +71,12 @@ def headline_numbers(store: MetricsStore, specs: Specs, days: int, today: date) 
             current, previous = _account_latest(store, source, metric, start)
             basis = "latest"
         elif granularity == "snapshot":
-            created = {e["entity_id"]: (e["created_at"] or "")[:10] for e in store.entities(source, entity_type)}
             latest = store.latest_snapshots(source, metric, entity_type)
-            current = _posts_total(latest, created, start, end)
-            previous = _posts_total(latest, created, prev_start, start)
-            # Say what was actually covered: a source may only read recent posts (e.g. X's lookback).
-            earliest = min(created.values(), default="") or start.isoformat()
-            basis = f"on posts from the last {days} days"
-            if earliest > start.isoformat():
-                basis = f"on posts since {earliest} (earliest collected)"
-                previous = None
+            current = sum(value for value, _ in latest.values())
+            # Each item's last reading before the window; None until collection history reaches back that far.
+            before = store.latest_snapshots(source, metric, entity_type, before=start.isoformat())
+            previous = sum(value for value, _ in before.values()) if before else None
+            basis = f"all {len(latest)} tracked {entity_type}s, latest"
         else:
             continue
         numbers.append({
@@ -99,14 +97,6 @@ def _account_latest(store: MetricsStore, source: str, metric: str, window_start:
     periods = sorted(by_period)
     before = [p for p in periods if p < window_start.isoformat()]
     return by_period[periods[-1]], (by_period[before[-1]] if before else None)
-
-
-def _posts_total(latest: dict[str, tuple[float, str]], created: dict[str, str], start: date, end: date) -> float:
-    """Sum of each entity's latest snapshot, for entities created in [start, end)."""
-    return sum(
-        value for entity_id, (value, _) in latest.items()
-        if start.isoformat() <= created.get(entity_id, "") < end.isoformat()
-    )
 
 
 def daily_charts(store: MetricsStore, specs: Specs, days: int, today: date) -> list[dict[str, Any]]:
@@ -161,7 +151,7 @@ def episode_table(store: MetricsStore, specs: Specs, episodes: EpisodeIndex) -> 
         if not spec.headline:
             continue
         key = f"{source}.{metric}"
-        if granularity == "day" and entity_type == EPISODE:
+        if granularity == "day" and entity_type not in UNLINKED:
             columns.append({"key": key, "label": spec.label, "source": source, "basis": "all collected"})
             launch_key = f"{key}.launch"
             columns.append({"key": launch_key, "label": f"{spec.label}, first {LAUNCH_DAYS}d", "source": source,
@@ -174,10 +164,10 @@ def episode_table(store: MetricsStore, specs: Specs, episodes: EpisodeIndex) -> 
                     daily = daily_by_slug.get(slug, {})
                     launch_end = (date.fromisoformat(info.published_on) + timedelta(days=LAUNCH_DAYS)).isoformat()
                     values[slug][launch_key] = sum(v for d, v in daily.items() if info.published_on <= d < launch_end)
-        elif granularity == "snapshot" and entity_type == POST:
-            columns.append({"key": key, "label": spec.label, "source": source, "basis": "posts linking the episode"})
-            linked = {e["entity_id"]: e["episode_slug"] for e in store.entities(source, POST) if e["episode_slug"]}
-            for entity_id, (value, _) in store.latest_snapshots(source, metric, POST).items():
+        elif granularity == "snapshot" and entity_type not in UNLINKED:
+            columns.append({"key": key, "label": spec.label, "source": source, "basis": f"{entity_type}s linked to the episode"})
+            linked = {e["entity_id"]: e["episode_slug"] for e in store.entities(source, entity_type) if e["episode_slug"]}
+            for entity_id, (value, _) in store.latest_snapshots(source, metric, entity_type).items():
                 if entity_id in linked:
                     slug = linked[entity_id]
                     values[slug][key] = (values[slug].get(key) or 0.0) + value
@@ -194,23 +184,24 @@ def episode_table(store: MetricsStore, specs: Specs, episodes: EpisodeIndex) -> 
     return {"columns": columns, "rows": rows}
 
 
-def posts_table(store: MetricsStore, specs: Specs, limit: int = 50) -> list[dict[str, Any]]:
-    """Recent posts per source with their latest snapshot values and linked episode."""
+def items_table(store: MetricsStore, specs: Specs, limit: int = 50) -> list[dict[str, Any]]:
+    """Newest items (posts, videos, ...) per source and type, with latest snapshot values and linked episode."""
     tables = []
     for (source, entity_type), metric_names in store.snapshot_metrics_by_entity_type().items():
-        if entity_type != POST:
+        if entity_type in UNLINKED:
             continue
-        latest = {m: store.latest_snapshots(source, m, POST) for m in metric_names}
-        # Headline metrics first, so the most important column sits next to the post text.
+        latest = {m: store.latest_snapshots(source, m, entity_type) for m in metric_names}
+        # Headline metrics first, so the most important column sits next to the item's title.
         ordered = sorted(metric_names, key=lambda m: not spec_for(specs, source, m).headline)
         rows = [
             {"id": e["entity_id"], "label": e["label"], "url": e["url"], "created_at": e["created_at"],
              "episode_slug": e["episode_slug"],
              "values": {m: latest[m].get(e["entity_id"], (None, ""))[0] for m in ordered}}
-            for e in store.entities(source, POST)[:limit]
+            for e in store.entities(source, entity_type)[:limit]
         ]
         tables.append({
             "source": source,
+            "entity_type": entity_type,
             "columns": [{"key": m, "label": spec_for(specs, source, m).label} for m in ordered],
             "rows": rows,
         })
@@ -223,9 +214,7 @@ def coverage(store: MetricsStore) -> list[dict[str, Any]]:
     for item in store.metric_inventory():
         span = spans.setdefault(item["source"], [item["first_period"], item["last_period"]])
         span[0], span[1] = min(span[0], item["first_period"]), max(span[1], item["last_period"])
-    latest_run: dict[str, dict[str, Any]] = {}
-    for run in store.recent_runs(limit=200):
-        latest_run.setdefault(run["source"], run)
+    latest_run = store.latest_runs()
     rows = []
     # A source can have data but no logged run (e.g. imported), or a run but no data yet.
     for source in sorted(set(spans) | set(latest_run)):
@@ -264,7 +253,7 @@ def build_dashboard_data(days: int = 90, today: date | None = None) -> dict[str,
                 for i in episodes.episodes.values()
                 if i.published_on >= (today - timedelta(days=days - 1)).isoformat()
             ],
-            "posts": posts_table(store, specs),
+            "items": items_table(store, specs),
             "coverage": coverage(store),
         }
 
@@ -292,7 +281,7 @@ def summarize(days: int = 30, today: date | None = None, top: int = 5) -> dict[s
 
 
 def episode_metrics(slug: str) -> dict[str, Any]:
-    """Everything collected for one episode: daily series per metric and posts that link to it."""
+    """Everything collected for one episode: daily series per metric and the posts/videos linked to it."""
     specs = metric_specs()
     episodes = EpisodeIndex.from_catalog()
     info = episodes.get(slug)
@@ -301,16 +290,18 @@ def episode_metrics(slug: str) -> dict[str, Any]:
     with MetricsStore(settings.metrics_db_path) as store:
         series = {}
         for item in store.metric_inventory():
-            if item["granularity"] == "day" and item["entity_type"] == EPISODE:
+            if item["granularity"] == "day" and item["entity_type"] not in UNLINKED:
                 daily = store.episode_daily(item["source"], item["metric"], slug)
                 if daily:
                     label = spec_for(specs, item["source"], item["metric"]).label
                     series[f"{item['source']}.{item['metric']}"] = {
                         "label": label, "total": sum(daily.values()), "daily": daily,
                     }
-        posts = [
-            {**p, "values": {k: v for k, v in p["values"].items() if v is not None}}
-            for table in posts_table(store, specs, limit=10_000)
-            for p in table["rows"] if p["episode_slug"] == slug
+        linked_items = [
+            {"source": table["source"], "type": table["entity_type"], **row,
+             "values": {k: v for k, v in row["values"].items() if v is not None}}
+            for table in items_table(store, specs, limit=10_000)
+            for row in table["rows"] if row["episode_slug"] == slug
         ]
-    return {"slug": slug, "title": info.title, "published_on": info.published_on, "series": series, "posts": posts}
+    return {"slug": slug, "title": info.title, "published_on": info.published_on, "series": series,
+            "linked_items": linked_items}
