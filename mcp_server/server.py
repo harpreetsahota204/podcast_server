@@ -22,12 +22,16 @@ from core.storage import R2StorageClient
 from core.thumbnail import generate_youtube_thumbnail
 from exporters.blog_post import create_blog_post
 from exporters.social import draft_social_package
+from exporters.x_post import post_to_x
 from exporters.youtube import PrivacyStatus, upload_video_to_youtube
 from importers.descript import (
     download_audio_from_url,
     extract_chapters_from_markers_or_transcript,
     format_show_notes_with_chapters,
 )
+from metrics.analysis import episode_metrics, summarize
+from metrics.collect import run_collection
+from metrics.report import write_report
 
 logger = logging.getLogger("podcast_server")
 mcp = FastMCP("podcast-server")
@@ -336,6 +340,14 @@ def podcast_draft_social(
 
 
 @mcp.tool()
+def podcast_post_to_x(
+    text: str, media_path: str | None = None, dry_run: bool = False, episode_slug: str | None = None
+) -> dict[str, Any]:
+    """Post to X as the configured account (only after explicit human approval of the exact text and media). Attaches one optional image, GIF, or video; dry_run checks everything without posting. Pass episode_slug when promoting an episode so the post's metrics are credited to it. Returns the post id and URL."""
+    return post_to_x(text=text, media_path=media_path, dry_run=dry_run, episode_slug=episode_slug)
+
+
+@mcp.tool()
 def podcast_stage_thumbnail(
     prompt_text: str,
     output_filename: str,
@@ -343,6 +355,32 @@ def podcast_stage_thumbnail(
 ) -> dict[str, Any]:
     """Builds a 16:9 YouTube thumbnail prompt and returns the local path and R2 key the rendered image should use. Does not generate the image."""
     return generate_youtube_thumbnail(prompt_text=prompt_text, output_filename=output_filename, style=style)
+
+
+@mcp.tool()
+def podcast_metrics_collect(sources: list[str] | None = None, days: int | None = None) -> list[dict[str, Any]]:
+    """Fetch audience metrics (read-only API calls) into the local metrics store. Default: every configured source, resuming where each left off; `days` re-fetches that many days. Returns per-source status."""
+    if days is not None and days < 1:
+        raise ValueError("days must be at least 1.")
+    return run_collection(sources, days)
+
+
+@mcp.tool()
+def podcast_metrics_summary(days: int = 30) -> dict[str, Any]:
+    """Summarize collected audience metrics for the last `days` days: headline numbers vs the previous period, top episodes, top apps/countries, and each source's freshness."""
+    return summarize(days=max(1, days))
+
+
+@mcp.tool()
+def podcast_episode_metrics(slug: str) -> dict[str, Any]:
+    """All collected metrics for one episode: daily downloads/listens per source and social posts linking to it."""
+    return episode_metrics(validate_slug(slug))
+
+
+@mcp.tool()
+def podcast_metrics_report(days: int = 90) -> dict[str, Any]:
+    """Write the self-contained HTML metrics dashboard for the last `days` days and return its path."""
+    return {"status": "written", "path": str(write_report(days=max(1, days)))}
 
 
 if __name__ == "__main__":

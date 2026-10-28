@@ -38,6 +38,15 @@ Last verified: <YYYY-MM-DD>
 | `EPISODE_GUID_PREFIX` | <prefix> |
 | `WEBSITE_*` overrides | <any non-default site paths or branch> |
 | `HF_BACKUP_REPO` | <user/dataset, or none> |
+| Metrics sources | <op3 / cloudflare / x / extra collectors>; `CLOUDFLARE_ZONE_ID` <zone>, `OP3_SHOW_UUID` <uuid> |
+
+## Metrics
+
+- Store: `metrics.db` in this folder (disposable; re-collect within each source's retention)
+- Dashboard: `metrics/dashboard.html`
+- Schedule: <cron line or systemd timer name and where its unit files live>
+- Retention to watch: <e.g. Cloudflare free plan keeps ~30 days, so a missed week of collection loses data>
+- Public stats page: <OP3 stats URL, if the prefix is on>
 
 ## Audio Hosting (Cloudflare R2)
 
@@ -87,6 +96,9 @@ How to restore: <short steps>
 | Cloudflare (DNS changes) | <dashboard / CLI login> | |
 | YouTube OAuth | <YOUTUBE_TOKEN_PATH> | |
 | Descript | `.env` | |
+| OP3 API token | `.env` | <read-only API key> |
+| Cloudflare analytics token | `.env` | <Zone > Analytics > Read, one zone> |
+| X (posting + metrics) | <xurl auth file> | <app name; scopes> |
 | Agent(s) operating the show | <agent name, where its MCP config and briefing live> | |
 
 ## Timeline

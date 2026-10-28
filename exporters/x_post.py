@@ -1,0 +1,182 @@
+"""Posts to X through the xurl CLI, with an optional image or video attached.
+
+xurl keeps the OAuth tokens in its own auth file. This module passes only the
+app name and username from settings, so no X credential passes through the
+engine, its logs, or tool output.
+"""
+
+import json
+import re
+import shutil
+import subprocess
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from core.config import settings
+from core.formatting import validate_slug
+from core.media_uploader import MEDIA_CONTENT_TYPES
+
+# xurl colors its JSON when it thinks stdout is a terminal; a stray color code would break parsing.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+# xurl error text is returned to the agent; cap it so a long dump stays readable.
+MAX_ERROR_CHARS = 300
+
+
+class XPostError(RuntimeError):
+    """Posting is not configured, or xurl or X rejected the upload or the post."""
+
+
+def decode_xurl_json(raw: str) -> dict[str, Any]:
+    """Decode xurl stdout, ignoring color codes and any trailing status text; X `errors` are left in place.
+
+    Reads (e.g. metrics) use this directly, because X reports per-item field errors
+    alongside valid data; posting goes through `parse_xurl_json`, which rejects them.
+    """
+    cleaned = _ANSI_RE.sub("", raw).strip()
+    start = cleaned.find("{")
+    if start < 0:
+        raise XPostError("xurl returned no JSON object")
+    # raw_decode stops at the end of the first object, so trailing non-JSON output is ignored.
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+    except json.JSONDecodeError as exc:
+        raise XPostError(f"xurl JSON decode error: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise XPostError("xurl JSON was not an object")
+    return payload
+
+
+def parse_xurl_json(raw: str) -> dict[str, Any]:
+    """Parse xurl stdout, ignoring color codes and any trailing status text; raise on X errors."""
+    payload = decode_xurl_json(raw)
+    if payload.get("errors"):
+        raise XPostError(f"X error: {payload['errors']}"[:MAX_ERROR_CHARS])
+    return payload
+
+
+def id_from_payload(payload: Mapping[str, Any]) -> str:
+    """Return the id from an upload or post response (`data.id`, or a top-level `id`)."""
+    data = payload.get("data")
+    if isinstance(data, dict) and data.get("id") not in (None, ""):
+        return str(data["id"])
+    if payload.get("id") not in (None, ""):
+        return str(payload["id"])
+    raise XPostError("xurl JSON had no data.id")
+
+
+def xurl_command() -> list[str]:
+    """Return the xurl binary plus account flags from settings; raise if X isn't configured.
+
+    Shared by posting and by the X metrics collector, so both act as the same account.
+    """
+    if not settings.x_username:
+        raise XPostError("X posting is off: set X_USERNAME (and XURL_APP if xurl has several apps).")
+    binary = settings.xurl_path or (Path(found) if (found := shutil.which("xurl")) else None)
+    if binary is None or not binary.is_file():
+        raise XPostError(f"xurl not found at {binary or 'PATH'}; install it or set XURL_PATH.")
+    # --app is only needed when the xurl auth file holds more than one developer app.
+    app_flags = ["--app", settings.xurl_app] if settings.xurl_app else []
+    return [str(binary), *app_flags, "--username", settings.x_username]
+
+
+def run_xurl(args: Sequence[str]) -> dict[str, Any]:
+    """Run one xurl command and return its parsed JSON. Verbose mode is never used: it prints tokens."""
+    completed = subprocess.run([*xurl_command(), *args], capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        detail = _ANSI_RE.sub("", f"{completed.stdout}\n{completed.stderr}").strip().replace("\n", " ")
+        raise XPostError(f"xurl exit {completed.returncode}: {detail}"[:MAX_ERROR_CHARS])
+    return parse_xurl_json(completed.stdout or "")
+
+
+def upload_media(media_path: Path) -> str:
+    """Upload one image, GIF, or video and return its X media id.
+
+    xurl waits for X to finish processing a video before returning (`--wait` is its default).
+    """
+    return id_from_payload(run_xurl(["media", "upload", str(media_path)]))
+
+
+def publish_post(text: str, media_id: str | None = None) -> str:
+    """Publish `text`, attaching the uploaded media when there is one, and return the post id."""
+    media_flags = ["--media-id", media_id] if media_id else []
+    # "--" ends flag parsing, so text that starts with "-" (e.g. a bullet list) isn't read as a flag.
+    return id_from_payload(run_xurl(["post", *media_flags, "--", text]))
+
+
+def _resolve_media(media_path: str | None) -> Path | None:
+    """Return the media file to attach, refusing missing, empty, or non-media files.
+
+    Only the media extensions the R2 uploader accepts are allowed, so an agent can't
+    post an arbitrary local file such as `.env`.
+    """
+    if not media_path:
+        return None
+    path = Path(media_path).expanduser().resolve()
+    if path.suffix.lower() not in MEDIA_CONTENT_TYPES:
+        raise ValueError(f"Unsupported media type {path.suffix!r}; allowed: {', '.join(sorted(MEDIA_CONTENT_TYPES))}")
+    if not path.is_file() or path.stat().st_size == 0:
+        raise FileNotFoundError(f"Media file missing or empty: {path}")
+    return path
+
+
+def read_post_log() -> list[dict[str, Any]]:
+    """Every post this engine published, oldest first; malformed lines (e.g. a torn write) are skipped.
+
+    The X metrics collector reads only these posts, so analytics cover exactly what
+    went out through the engine.
+    """
+    if not settings.x_post_log_path.exists():
+        return []
+    records = []
+    for line in settings.x_post_log_path.read_text(encoding="utf-8").splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and record.get("tweet_id"):
+            records.append(record)
+    return records
+
+
+def post_to_x(
+    text: str, media_path: str | None = None, dry_run: bool = False, episode_slug: str | None = None
+) -> dict[str, Any]:
+    """Post `text` (plus optional media) as the configured account and record it in the post log.
+
+    Every check runs before the upload, so a rejected call posts nothing. `dry_run`
+    runs the same checks and reports what would be sent without calling X.
+    `episode_slug` credits the post's metrics to that episode.
+    """
+    body = text.strip()
+    if not body:
+        raise ValueError("Post text is empty.")
+    media = _resolve_media(media_path)
+    xurl_command()  # fail on missing configuration before anything is uploaded
+
+    summary = {
+        "username": settings.x_username,
+        "chars": len(body),
+        "media_file": media.name if media else None,
+        "media_type": MEDIA_CONTENT_TYPES[media.suffix.lower()] if media else None,
+        "episode_slug": validate_slug(episode_slug) if episode_slug else None,
+    }
+    if dry_run:
+        return {"status": "dry_run", **summary}
+
+    media_id = upload_media(media) if media else None
+    tweet_id = publish_post(body, media_id)
+    url = f"https://x.com/{settings.x_username}/status/{tweet_id}"
+    result: dict[str, Any] = {"status": "posted", "tweet_id": tweet_id, "url": url, **summary}
+
+    # The post is already live here. A log failure must not raise, or an agent may retry and post twice.
+    record = {"posted_at": datetime.now(UTC).isoformat(), **result, "text": body}
+    try:
+        settings.x_post_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with settings.x_post_log_path.open("a", encoding="utf-8") as log:
+            log.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        result["log_error"] = str(exc)
+    return result

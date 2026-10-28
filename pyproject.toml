@@ -28,10 +28,10 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# Installed editable by `uv sync`, so `core`, `exporters`, `importers`, and `mcp_server`
+# Installed editable by `uv sync`, so `core`, `exporters`, `importers`, `mcp_server`, and `metrics`
 # import from anywhere (scripts, tests, agents) without setting PYTHONPATH.
 [tool.hatch.build.targets.wheel]
-packages = ["core", "exporters", "importers", "mcp_server"]
+packages = ["core", "exporters", "importers", "mcp_server", "metrics"]
 
 [tool.ruff]
 target-version = "py311"

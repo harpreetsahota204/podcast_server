@@ -73,6 +73,8 @@ def _add_channel_metadata(channel: ET.Element) -> None:
     # Tells hosting platforms to refuse imports of this feed unless the owner email
     # confirms, which blocks someone else from moving the show to their account.
     ET.SubElement(channel, f"{{{PODCAST_NS}}}locked", {"owner": settings.podcast_owner_email}).text = "yes"
+    # Stable show identity that survives feed moves; OP3 and Podcast Index key show stats on it.
+    ET.SubElement(channel, f"{{{PODCAST_NS}}}guid").text = settings.podcast_guid
 
     # Artwork is declared twice: iTunes reads its own tag, generic RSS readers read <image>.
     ET.SubElement(channel, _itunes("image"), {"href": settings.podcast_image_url})

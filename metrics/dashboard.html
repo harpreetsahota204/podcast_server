@@ -1,0 +1,479 @@
+<!doctype html>
+<!--
+  Podcast metrics dashboard template, filled by metrics/report.py.
+  Self-contained on purpose: no external scripts, fonts, or requests.
+  All data is inserted with textContent / attributes, never innerHTML.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Listening report</title>
+<style>
+  :root {
+    --enamel: #e7ebe6;     /* page: studio-gear enamel */
+    --panel: #f6f8f5;      /* raised surfaces */
+    --ink: #17201d;        /* text */
+    --muted: #5f6b65;      /* secondary text */
+    --rule: #c3cbc4;       /* hairlines */
+    --tape: #1d6a73;       /* primary data color */
+    --vu: #d48a06;         /* releases and highlights, like a VU needle */
+    --down: #a3412c;       /* negative change */
+    --display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--enamel); color: var(--ink); font: 15px/1.5 var(--body); }
+  main { max-width: 1180px; margin: 0 auto; padding: 32px 24px 64px; }
+  a { color: var(--tape); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--vu); outline-offset: 2px; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px;
+           border-bottom: 1px solid var(--rule); padding-bottom: 16px; }
+  header h1 { margin: 0; font: italic 400 34px/1.1 var(--display); letter-spacing: -0.01em; }
+  header .meta { color: var(--muted); font: 12px/1.4 var(--mono); text-align: right; }
+
+  h2 { font: 600 12px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+       margin: 40px 0 14px; }
+
+  .headlines { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1px;
+               background: var(--rule); border: 1px solid var(--rule); margin-top: 24px; }
+  .headline { background: var(--panel); padding: 16px 18px; }
+  .headline .label { font-size: 13px; color: var(--muted); }
+  .headline .value { font: 500 30px/1.15 var(--mono); font-variant-numeric: tabular-nums; margin: 4px 0 2px; }
+  .headline .change { font: 12px var(--mono); color: var(--muted); }
+  .headline .change.up { color: var(--tape); }
+  .headline .change.down { color: var(--down); }
+
+  /* Signature: the main series drawn as an audio waveform, releases pinned on top. */
+  .wave-panel { background: var(--ink); color: var(--enamel); padding: 18px 18px 10px; }
+  .wave-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: center; }
+  .wave-head .readout { font: 13px var(--mono); color: #b9c4bf; min-height: 1.5em; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tabs button { font: 12px var(--mono); background: transparent; color: #b9c4bf; border: 1px solid #3b4843;
+                 padding: 4px 10px; cursor: pointer; }
+  .tabs button[aria-pressed="true"] { background: var(--enamel); color: var(--ink); border-color: var(--enamel); }
+  svg.wave { width: 100%; height: 240px; display: block; margin-top: 10px; }
+  svg.wave .bar { fill: #5fb3bb; }
+  svg.wave .bar:hover { fill: #ffffff; }
+  .wave-axis { position: relative; height: 18px; font: 11px var(--mono); color: #8e9b95; }
+  .wave-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+  .wave-axis span.start { transform: none; }
+  .wave-axis span.end { transform: translateX(-100%); }
+  svg.wave .pin { stroke: var(--vu); stroke-width: 1.5; }
+  svg.wave .pin-head { fill: var(--vu); }
+  .legend { font: 12px var(--mono); color: #8e9b95; margin: 6px 0 0; }
+  .legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--vu);
+                 margin-right: 6px; vertical-align: middle; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--rule); padding: 14px 16px; }
+  .card h3 { margin: 0 0 10px; font: 600 14px/1.3 var(--body); }
+  .card h3 small { font: 12px var(--mono); color: var(--muted); font-weight: 400; margin-left: 6px; }
+  svg.spark { width: 100%; height: 70px; display: block; }
+  svg.spark path { fill: none; stroke: var(--tape); stroke-width: 1.5; }
+  .bars { list-style: none; margin: 0; padding: 0; }
+  .bars li { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: 13px; margin-bottom: 7px; }
+  .bars .track { grid-column: 1 / -1; height: 4px; background: #dde3dd; }
+  .bars .fill { height: 100%; background: var(--tape); }
+
+  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--rule); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 8px 12px; border-bottom: 1px solid #dde3dd; text-align: left; vertical-align: top; }
+  td.n, th.n { text-align: right; white-space: nowrap; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  th button { all: unset; cursor: pointer; font: 600 11px/1.3 var(--mono); letter-spacing: 0.06em;
+              text-transform: uppercase; color: var(--muted); }
+  th button[data-sorted]::after { content: " ↓"; }
+  th button[data-sorted="asc"]::after { content: " ↑"; }
+  .sub { color: var(--muted); font: 11px var(--mono); }
+  .more { margin-top: 10px; font: 12px var(--mono); background: none; border: 1px solid var(--rule); padding: 6px 12px;
+          cursor: pointer; color: var(--ink); }
+
+  .sources { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .sources li { background: var(--panel); border: 1px solid var(--rule); padding: 10px 14px;
+                display: grid; grid-template-columns: 110px 70px 1fr; gap: 4px 14px; font-size: 13px; }
+  .status { font: 600 11px var(--mono); text-transform: uppercase; }
+  .status.ok { color: var(--tape); }
+  .status.failed { color: var(--down); }
+  .status.skipped, .status.none { color: var(--muted); }
+  .empty { color: var(--muted); font-style: italic; }
+  code { font-family: var(--mono); font-size: 0.92em; }
+
+  @media (max-width: 640px) {
+    header .meta { text-align: left; }
+    .sources li { grid-template-columns: 1fr; }
+    svg.wave { height: 180px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    svg.wave .bar { transition: fill 120ms ease; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Listening report</h1>
+    <div class="meta" id="meta"></div>
+  </header>
+  <section class="headlines" id="headlines" aria-label="Headline numbers"></section>
+
+  <h2>Daily signal</h2>
+  <section class="wave-panel" aria-label="Daily trend">
+    <div class="wave-head">
+      <div class="tabs" id="wave-tabs" role="group" aria-label="Choose a metric"></div>
+      <div class="readout" id="readout" aria-live="polite"></div>
+    </div>
+    <svg class="wave" id="wave" viewBox="0 0 1000 240" preserveAspectRatio="none" role="img"></svg>
+    <div class="wave-axis" id="wave-axis" aria-hidden="true"></div>
+    <p class="legend"><span class="dot"></span>Episode release (hover for the title)</p>
+  </section>
+
+  <div id="more-charts-section">
+    <h2>Other daily metrics</h2>
+    <div class="grid" id="more-charts"></div>
+  </div>
+
+  <h2>Where listening comes from</h2>
+  <div class="grid" id="breakdowns"></div>
+
+  <h2>Episodes</h2>
+  <div class="table-wrap"><table id="episodes"></table></div>
+  <button class="more" id="episodes-more" type="button" hidden></button>
+
+  <div id="posts-section"></div>
+
+  <h2>Sources</h2>
+  <ul class="sources" id="sources"></ul>
+</main>
+
+<script id="dashboard-data" type="application/json">__DASHBOARD_DATA__</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("dashboard-data").textContent);
+const SVG_NS = "http://www.w3.org/2000/svg";
+const EPISODE_ROWS_COLLAPSED = 25;
+
+/* ---------- small helpers ---------- */
+
+// Create an element with attributes and text; text always goes through textContent.
+function el(tag, attrs = {}, text) {
+  const node = tag.startsWith("svg:") ? document.createElementNS(SVG_NS, tag.slice(4)) : document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null) node.setAttribute(k, v);
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+// Only allow http(s) links from data, so a crafted URL can't run script.
+function safeHref(url) {
+  return /^https?:\/\//i.test(url || "") ? url : null;
+}
+
+// Human-sized numbers: 1,234 / 12.3k / 4.5M; bytes get binary units.
+function fmt(value, metric) {
+  if (value === null || value === undefined) return "–";
+  if (metric === "bytes") {
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let v = value, i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(v < 10 && i ? 1 : 0)} ${units[i]}`;
+  }
+  const abs = Math.abs(value);
+  if (abs >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (abs >= 1e4) return `${(value / 1e3).toFixed(1)}k`;
+  if (!Number.isInteger(value)) return value.toFixed(abs < 1 ? 2 : abs < 10 ? 1 : 0);
+  return value.toLocaleString("en-US");
+}
+
+function shortDate(iso) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+/* ---------- header and headlines ---------- */
+
+function renderHeader() {
+  document.getElementById("title").textContent = DATA.show_title;
+  document.title = `${DATA.show_title} · Listening report`;
+  const meta = document.getElementById("meta");
+  meta.append(el("div", {}, `Last ${DATA.days} days to ${DATA.today} (UTC)`));
+  meta.append(el("div", {}, `Generated ${DATA.generated_at.replace("T", " ").replace("+00:00", " UTC")}`));
+}
+
+function renderHeadlines() {
+  const box = document.getElementById("headlines");
+  if (!DATA.headlines.length) {
+    box.append(el("div", { class: "headline" }, "No metrics yet. Run: uv run python -m metrics.collect --report"));
+    return;
+  }
+  for (const h of DATA.headlines) {
+    const card = el("div", { class: "headline", title: h.description || "" });
+    card.append(el("div", { class: "label" }, `${h.label} · ${h.source}`));
+    card.append(el("div", { class: "value" }, fmt(h.current, h.metric)));
+    let changeText = h.basis, cls = "change";
+    if (h.change_pct !== null) {
+      cls += h.change_pct >= 0 ? " up" : " down";
+      changeText = `${h.change_pct >= 0 ? "+" : ""}${h.change_pct}% vs previous · ${h.basis}`;
+    }
+    card.append(el("div", { class: cls }, changeText));
+    box.append(card);
+  }
+}
+
+/* ---------- signature waveform ---------- */
+
+function renderWave(chart) {
+  const svg = document.getElementById("wave");
+  const readout = document.getElementById("readout");
+  svg.replaceChildren();
+  svg.setAttribute("aria-label", `${chart.label}, daily, last ${DATA.days} days`);
+  const W = 1000, mid = 124, amp = 108;
+  const series = chart.series;
+  const max = Math.max(1, ...series.map(([, v]) => v));
+  const step = W / series.length;
+  const index = new Map(series.map(([d], i) => [d, i]));
+
+  // Centre line, then one mirrored bar per day: louder days, taller "waveform".
+  svg.append(el("svg:line", { x1: 0, x2: W, y1: mid, y2: mid, stroke: "#3b4843" }));
+  series.forEach(([day, value], i) => {
+    const h = Math.max(value > 0 ? 1.5 : 0.5, (value / max) * amp);
+    const bar = el("svg:rect", {
+      class: "bar", x: i * step + step * 0.15, width: Math.max(1, step * 0.7), y: mid - h, height: h * 2,
+    });
+    bar.append(el("svg:title", {}, `${shortDate(day)}: ${fmt(value, chart.metric)}`));
+    bar.addEventListener("mouseenter", () => { readout.textContent = `${shortDate(day)} · ${fmt(value, chart.metric)} ${chart.label.toLowerCase()}`; });
+    svg.append(bar);
+  });
+
+  // Releases: an amber pin above the day an episode came out.
+  for (const r of DATA.releases) {
+    if (!index.has(r.date)) continue;
+    const x = index.get(r.date) * step + step / 2;
+    const pin = el("svg:g");
+    pin.append(el("svg:line", { class: "pin", x1: x, x2: x, y1: 6, y2: mid - 2 }));
+    pin.append(el("svg:circle", { class: "pin-head", cx: x, cy: 8, r: 4 }));
+    pin.append(el("svg:title", {}, `${shortDate(r.date)} · ${r.title}`));
+    svg.append(pin);
+  }
+
+  // Axis labels live in HTML, not the stretched SVG, so text never distorts on narrow screens.
+  // First and last day, plus month starts that aren't crowding a neighbour (12% apart).
+  const axis = document.getElementById("wave-axis");
+  axis.replaceChildren();
+  const ticks = [];
+  series.forEach(([day], i) => {
+    const pct = ((i + 0.5) / series.length) * 100;
+    const isEdge = i === 0 || i === series.length - 1;
+    if (isEdge || day.endsWith("-01")) ticks.push({ day, pct, isEdge });
+  });
+  const kept = ticks.filter((t) => t.isEdge || ticks.every((o) => o === t || !o.isEdge || Math.abs(o.pct - t.pct) >= 12));
+  for (const t of kept) {
+    const span = el("span", {}, shortDate(t.day));
+    span.style.left = `${t.pct}%`;
+    if (t.pct < 6) span.classList.add("start");
+    if (t.pct > 94) span.classList.add("end");
+    axis.append(span);
+  }
+  const total = series.reduce((s, [, v]) => s + v, 0);
+  const peak = Math.max(0, ...series.map(([, v]) => v));
+  readout.textContent = `${fmt(total, chart.metric)} ${chart.label.toLowerCase()} · peak ${fmt(peak, chart.metric)}/day`;
+}
+
+function renderWaveTabs() {
+  const tabs = document.getElementById("wave-tabs");
+  const charts = DATA.charts;
+  if (!charts.length) {
+    document.getElementById("readout").textContent = "No daily data yet.";
+    return;
+  }
+  // Headline metrics get a tab; if none are headlines, offer every chart.
+  const options = charts.filter((c) => c.headline).length ? charts.filter((c) => c.headline) : charts;
+  options.forEach((chart, i) => {
+    const b = el("button", { type: "button", "aria-pressed": i === 0 ? "true" : "false" }, `${chart.label} · ${chart.source}`);
+    b.addEventListener("click", () => {
+      tabs.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", "false"));
+      b.setAttribute("aria-pressed", "true");
+      renderWave(chart);
+    });
+    tabs.append(b);
+  });
+  renderWave(options[0]);
+}
+
+/* ---------- secondary charts and breakdowns ---------- */
+
+function sparkline(series) {
+  const svg = el("svg:svg", { class: "spark", viewBox: "0 0 300 70", preserveAspectRatio: "none", "aria-hidden": "true" });
+  const max = Math.max(1, ...series.map(([, v]) => v));
+  const step = 300 / Math.max(1, series.length - 1);
+  const d = series.map(([, v], i) => `${i ? "L" : "M"}${(i * step).toFixed(1)},${(66 - (v / max) * 60).toFixed(1)}`).join("");
+  svg.append(el("svg:path", { d }));
+  return svg;
+}
+
+function renderMoreCharts() {
+  const rest = DATA.charts.filter((c) => !c.headline);
+  if (!rest.length) { document.getElementById("more-charts-section").hidden = true; return; }
+  const grid = document.getElementById("more-charts");
+  for (const c of rest) {
+    const total = c.series.reduce((s, [, v]) => s + v, 0);
+    const card = el("div", { class: "card", title: c.description || "" });
+    const h = el("h3", {}, c.label);
+    h.append(el("small", {}, `${c.source} · ${fmt(total, c.metric)}`));
+    card.append(h, sparkline(c.series));
+    grid.append(card);
+  }
+}
+
+function renderBreakdowns() {
+  const grid = document.getElementById("breakdowns");
+  if (!DATA.breakdowns.length) { grid.append(el("p", { class: "empty" }, "No breakdowns collected yet.")); return; }
+  for (const b of DATA.breakdowns) {
+    const card = el("div", { class: "card" });
+    const h = el("h3", {}, `${b.label} by ${b.kind}`);
+    h.append(el("small", {}, b.source));
+    card.append(h);
+    const list = el("ul", { class: "bars" });
+    const max = Math.max(1, ...b.rows.map(([, v]) => v));
+    for (const [name, value] of b.rows) {
+      const li = el("li");
+      li.append(el("span", {}, name), el("span", { class: "num" }, fmt(value, b.metric)));
+      const track = el("div", { class: "track" });
+      track.append(el("div", { class: "fill", style: `width:${(value / max) * 100}%` }));
+      li.append(track);
+      list.append(li);
+    }
+    if (b.other > 0) list.append(el("li", { class: "empty" }, `Everything else: ${fmt(b.other, b.metric)}`));
+    card.append(list);
+    grid.append(card);
+  }
+}
+
+/* ---------- tables ---------- */
+
+// Builds a sortable table. columns: [{key, label, numeric, get(row) -> value, render(row) -> Node|string}]
+function sortableTable(table, columns, rows, { limit, moreButton, defaultSort }) {
+  let sortKey = defaultSort, ascending = false, expanded = false;
+  function draw() {
+    table.replaceChildren();
+    const head = el("tr");
+    for (const c of columns) {
+      const th = el("th", { class: c.numeric ? "n" : "", scope: "col", title: c.title || "" });
+      const btn = el("button", { type: "button" }, c.label);
+      if (c.key === sortKey) btn.setAttribute("data-sorted", ascending ? "asc" : "desc");
+      btn.addEventListener("click", () => {
+        ascending = c.key === sortKey ? !ascending : !c.numeric;
+        sortKey = c.key;
+        draw();
+      });
+      th.append(btn);
+      head.append(th);
+    }
+    const thead = el("thead");
+    thead.append(head);
+    table.append(thead);
+    const col = columns.find((c) => c.key === sortKey) || columns[0];
+    const sorted = [...rows].sort((a, b) => {
+      const va = col.get(a), vb = col.get(b);
+      // Missing values always sink to the bottom, whichever direction.
+      if (va === null || va === undefined) return 1;
+      if (vb === null || vb === undefined) return -1;
+      const cmp = typeof va === "number" ? va - vb : String(va).localeCompare(String(vb));
+      return ascending ? cmp : -cmp;
+    });
+    const body = el("tbody");
+    const visible = limit && !expanded ? sorted.slice(0, limit) : sorted;
+    for (const row of visible) {
+      const tr = el("tr");
+      for (const c of columns) {
+        const td = el("td", { class: c.numeric ? "n" : "" });
+        const content = c.render ? c.render(row) : fmt(c.get(row), c.metric);
+        td.append(content);
+        tr.append(td);
+      }
+      body.append(tr);
+    }
+    table.append(body);
+    if (moreButton) {
+      moreButton.hidden = !limit || rows.length <= limit;
+      moreButton.textContent = expanded ? "Show fewer" : `Show all ${rows.length}`;
+    }
+  }
+  if (moreButton) moreButton.addEventListener("click", () => { expanded = !expanded; draw(); });
+  draw();
+}
+
+function renderEpisodes() {
+  const { columns, rows } = DATA.episodes;
+  const table = document.getElementById("episodes");
+  const cols = [
+    { key: "title", label: "Episode", get: (r) => r.title, render: (r) => {
+        const frag = document.createDocumentFragment();
+        frag.append(el("div", {}, r.title), el("div", { class: "sub" }, r.slug));
+        return frag;
+      } },
+    { key: "published_on", label: "Released", get: (r) => r.published_on, render: (r) => r.published_on || "–" },
+    ...columns.map((c) => ({
+      key: c.key, label: `${c.label} · ${c.source}`, numeric: true, title: c.basis,
+      metric: c.key.split(".")[1], get: (r) => r.values[c.key],
+    })),
+  ];
+  sortableTable(table, cols, rows, {
+    limit: EPISODE_ROWS_COLLAPSED, moreButton: document.getElementById("episodes-more"),
+    defaultSort: columns.length ? columns[0].key : "published_on",
+  });
+}
+
+function renderPosts() {
+  const section = document.getElementById("posts-section");
+  for (const t of DATA.posts) {
+    if (!t.rows.length) continue;
+    section.append(el("h2", {}, `Posts · ${t.source}`));
+    const wrap = el("div", { class: "table-wrap" });
+    const table = el("table");
+    wrap.append(table);
+    section.append(wrap);
+    const cols = [
+      { key: "created_at", label: "Posted", get: (r) => r.created_at, render: (r) => (r.created_at || "").slice(0, 10) },
+      { key: "label", label: "Post", get: (r) => r.label, render: (r) => {
+          const href = safeHref(r.url);
+          return href ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, r.label || "(no text)") : (r.label || "");
+        } },
+      { key: "episode_slug", label: "Episode", get: (r) => r.episode_slug, render: (r) => r.episode_slug || "–" },
+      ...t.columns.map((c) => ({ key: c.key, label: c.label, numeric: true, metric: c.key, get: (r) => r.values[c.key] })),
+    ];
+    sortableTable(table, cols, t.rows, { defaultSort: "created_at" });
+  }
+}
+
+/* ---------- sources ---------- */
+
+function renderSources() {
+  const list = document.getElementById("sources");
+  if (!DATA.coverage.length) { list.append(el("li", { class: "empty" }, "No collector has run yet.")); return; }
+  for (const s of DATA.coverage) {
+    const li = el("li");
+    li.append(el("strong", {}, s.source));
+    li.append(el("span", { class: `status ${s.last_run_status || "none"}` }, s.last_run_status || "never run"));
+    const detail = el("span");
+    const range = s.first_period ? `${s.first_period} → ${s.last_period}` : "no data";
+    detail.append(el("span", { class: "num" }, range));
+    if (s.last_run_at) detail.append(el("span", { class: "sub" }, ` · last run ${s.last_run_at.replace("T", " ")}`));
+    if (s.last_run_message) detail.append(el("div", { class: "sub" }, s.last_run_message));
+    li.append(detail);
+    list.append(li);
+  }
+}
+
+renderHeader();
+renderHeadlines();
+renderWaveTabs();
+renderMoreCharts();
+renderBreakdowns();
+renderEpisodes();
+renderPosts();
+renderSources();
+</script>
+</body>
+</html>

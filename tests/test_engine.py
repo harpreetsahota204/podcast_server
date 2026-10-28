@@ -7,34 +7,15 @@ Every test points settings at temp directories, so the real catalog, website
 repo, and R2 bucket are never touched.
 """
 
-import os
-import tempfile
+# Settings are built when core.config is first imported, so the fake show's
+# environment (see fake_show.py) must be set before the imports below.
+import fake_show  # noqa: F401 - must precede every engine import
 
-# Settings are built when core.config is first imported, so a complete fake show
-# must be in the environment before the imports below. The env file points at
-# /dev/null so a developer's real .env never leaks into tests.
-os.environ.update({
-    "PODCAST_SERVER_ENV_FILE": os.devnull,
-    "PODCAST_TITLE": "Test Show",
-    "PODCAST_DESCRIPTION": "A show used only by the test suite.",
-    "PODCAST_AUTHOR": "Test Author",
-    "PODCAST_OWNER_EMAIL": "owner@example.com",
-    "PODCAST_LINK": "https://example.com/podcast",
-    "PODCAST_FEED_URL": "https://example.com/podcast/rss.xml",
-    "PODCAST_IMAGE_URL": "https://example.com/cover.jpg",
-    "EPISODE_GUID_PREFIX": "test",
-    "R2_BUCKET_NAME": "test-bucket",
-    "R2_PUBLIC_DOMAIN": "https://audio.example.com",
-    "USE_OP3_PREFIX": "true",
-    "SITE_MODE": "astro",
-    "WEBSITE_PATH": tempfile.mkdtemp(prefix="podcast-test-site-"),
-    "DATA_DIR": tempfile.mkdtemp(prefix="podcast-test-data-"),
-})
-
-import json  # noqa: E402 - must follow the environment setup above
+import json
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -268,6 +249,15 @@ class FeedAndExportTests(unittest.TestCase):
         xml = build_rss_xml([])
         self.assertIn(f'<podcast:locked owner="{settings.podcast_owner_email}">yes</podcast:locked>', xml)
 
+    def test_feed_carries_spec_derived_podcast_guid(self) -> None:
+        """The show GUID is UUIDv5 of the scheme-less feed URL, as the Podcasting 2.0 spec requires."""
+        from core.config import podcast_guid_for_feed
+
+        # Reference value from the Podcast Index spec's worked example.
+        self.assertEqual(podcast_guid_for_feed("https://mp3s.nashownotes.com/pc20rss.xml/"),
+                         "917393e3-1b1e-5cef-ace4-edaa54e1f810")
+        self.assertIn(f"<podcast:guid>{settings.podcast_guid}</podcast:guid>", build_rss_xml([]))
+
     def test_markdown_show_notes_reach_content_encoded_without_raw_html(self) -> None:
         """New episodes (Markdown only) get rendered HTML show notes; embedded HTML is escaped."""
         ep = make_episode(content_markdown="### Chapters\n\n- **06:40** — Arch\n\n<script>x</script>")
@@ -472,6 +462,91 @@ class ConfigurationTests(unittest.TestCase):
                 settings.data_dir = saved
         self.assertEqual(posts["post_short"], "hook | Ada | https://ep")
         self.assertIn("key points:\n- a", posts["post_long"])
+
+
+class XPostTests(unittest.TestCase):
+    """Posting to X: xurl output parsing, pre-upload guards, and the post log. xurl is always mocked."""
+
+    def setUp(self) -> None:
+        """Point settings at a temp data dir and a fake xurl binary, with one PNG ready to attach."""
+        self.tmp = Path(tempfile.mkdtemp())
+        self.fake_xurl = self.tmp / "xurl"
+        self.fake_xurl.write_text("#!/bin/sh\n")
+        self.image = self.tmp / "clip.png"
+        self.image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 20)
+        self.saved = (settings.x_username, settings.xurl_app, settings.xurl_path, settings.data_dir)
+        settings.x_username, settings.xurl_app = "testshow", "test-app"
+        settings.xurl_path, settings.data_dir = self.fake_xurl, self.tmp
+
+    def tearDown(self) -> None:
+        """Restore settings and remove the temp dir."""
+        settings.x_username, settings.xurl_app, settings.xurl_path, settings.data_dir = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _xurl_ok(*stdout: str) -> mock.MagicMock:
+        """Mock subprocess.run returning each stdout in turn with exit code 0."""
+        return mock.MagicMock(side_effect=[subprocess.CompletedProcess([], 0, out, "") for out in stdout])
+
+    def test_parse_handles_color_codes_and_trailing_text(self) -> None:
+        """Colored JSON followed by status noise still parses to the post id."""
+        from exporters.x_post import id_from_payload, parse_xurl_json
+
+        raw = '\x1b[32m{"data": {"id": "123", "text": "hi"}}\x1b[0m\nrate limit: 99 left'
+        self.assertEqual(id_from_payload(parse_xurl_json(raw)), "123")
+
+    def test_parse_raises_on_x_errors_and_missing_id(self) -> None:
+        """An `errors` payload or a response without an id is a failure, not a silent success."""
+        from exporters.x_post import XPostError, id_from_payload, parse_xurl_json
+
+        with self.assertRaises(XPostError):
+            parse_xurl_json('{"errors": [{"message": "duplicate content"}]}')
+        with self.assertRaises(XPostError):
+            id_from_payload(parse_xurl_json('{"data": {}}'))
+
+    def test_non_media_file_refused_before_xurl_runs(self) -> None:
+        """A secret file can't be attached, even when it exists."""
+        from exporters.x_post import post_to_x
+
+        secret = self.tmp / ".env"
+        secret.write_text("TOKEN=abc")
+        with mock.patch("exporters.x_post.subprocess.run") as run:
+            with self.assertRaises(ValueError):
+                post_to_x("hello", media_path=str(secret))
+            with self.assertRaises(ValueError):
+                post_to_x("hello", episode_slug="../not-a-slug")
+        run.assert_not_called()
+
+    def test_dry_run_and_unconfigured_account_never_call_xurl(self) -> None:
+        """dry_run reports what would be sent; with no X_USERNAME, posting refuses."""
+        from exporters.x_post import XPostError, post_to_x
+
+        with mock.patch("exporters.x_post.subprocess.run") as run:
+            preview = post_to_x("  hello  ", media_path=str(self.image), dry_run=True)
+            settings.x_username = None
+            with self.assertRaises(XPostError):
+                post_to_x("hello")
+        run.assert_not_called()
+        self.assertEqual(preview["status"], "dry_run")
+        self.assertEqual((preview["chars"], preview["media_type"]), (5, "image/png"))
+
+    def test_post_uploads_media_attaches_it_and_logs(self) -> None:
+        """Media is uploaded first, its id attached to the post, and the accepted post logged."""
+        from exporters.x_post import post_to_x
+
+        run = self._xurl_ok('{"data": {"id": "m-1"}}', '{"data": {"id": "t-9"}}')
+        with mock.patch("exporters.x_post.subprocess.run", run):
+            result = post_to_x("-new episode", media_path=str(self.image), episode_slug="ep-one")
+
+        upload_cmd, post_cmd = (call.args[0] for call in run.call_args_list)
+        account = [str(self.fake_xurl), "--app", "test-app", "--username", "testshow"]
+        self.assertEqual(upload_cmd, [*account, "media", "upload", str(self.image)])
+        self.assertEqual(post_cmd, [*account, "post", "--media-id", "m-1", "--", "-new episode"])
+        self.assertEqual(result["url"], "https://x.com/testshow/status/t-9")
+        logged = json.loads(settings.x_post_log_path.read_text())
+        self.assertEqual((logged["tweet_id"], logged["text"]), ("t-9", "-new episode"))
+        # The metrics collector reads this log, so the episode credit must be recorded with the post.
+        self.assertEqual(logged["episode_slug"], "ep-one")
 
 
 if __name__ == "__main__":

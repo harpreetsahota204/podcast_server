@@ -149,7 +149,41 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
 
 **Descript staging** (`podcast_stage_from_descript`): the tool takes the episode's transcript exported from Descript as Markdown (markers such as `[00:12:30] Chapter title` or timestamped headings become chapters), plus either the published audio's download URL or a local MP3 path. Set `DESCRIPT_API_BEARER` only if your download URLs require authentication; it's sent to `descript.com` hosts only.
 
+**Posting to X** (`podcast_post_to_x`, about 15 minutes): the engine posts through [xurl](https://github.com/xdevplatform/xurl), X's official CLI, which keeps your OAuth tokens in its own auth file (`~/.xurl`), so no X credential goes in `.env` and none ever passes through the engine or its logs.
+1. **Developer app.** In the [X developer portal](https://developer.x.com), create a project and app. Under *User authentication settings* choose **Read and write**, type **Native App** (public client) or **Web App**, callback URL `http://localhost:8080/callback`, and any website URL. Copy the OAuth 2.0 **Client ID** (and Client Secret, for a Web App). X bills API usage on most plans; check your plan in the portal.
+2. **xurl.** Install it per [its README](https://github.com/xdevplatform/xurl), then register the app and log in as the account that will post (opens a browser once):
+   ```bash
+   xurl auth apps add my-show --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
+   xurl auth oauth2 --app my-show
+   xurl --app my-show whoami      # should print the account you'll post as
+   ```
+3. **Engine settings.** In `.env`: `X_USERNAME=<handle without @>`, plus `XURL_APP=my-show` if xurl holds more than one app and `XURL_PATH=/path/to/xurl` if it isn't on `PATH`. `uv run python -m core.doctor` reports whether X posting is ready.
+4. **Try it.** Ask your agent for `podcast_post_to_x(text=..., dry_run=true)`: it runs every check without posting. Real posts are appended to `$DATA_DIR/social/x_posts.jsonl`. When promoting an episode, pass `episode_slug` so the post's metrics are credited to it.
+
 **Backups:** `hf auth login` once, set `HF_BACKUP_REPO` to a dataset id under your account (it's created private on first run), then run the backup after each publish (below).
+
+**Audience metrics** (`podcast_metrics_*` tools, `python -m metrics.collect`): each source is optional and switches on once its settings are present. `uv run python -m core.doctor` lists which are ready.
+
+| Source | What you get | Setup |
+| :--- | :--- | :--- |
+| OP3 | Bot-filtered downloads per day and episode; listening apps, countries, devices | `USE_OP3_PREFIX=true` (publicly visible stats), then create a free key at [op3.dev/api/keys](https://op3.dev/api/keys) and set `OP3_API_TOKEN`. The show is looked up by `<podcast:guid>` (set `OP3_SHOW_UUID` to skip the lookup). OP3 starts counting about a day after your feed carries the prefix. |
+| Cloudflare | Audio requests, bytes served, and estimated full listens per episode, from every client (including ones OP3 never sees) | A Cloudflare API token with **Zone → Analytics → Read** on the zone serving `R2_PUBLIC_DOMAIN`; set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ZONE_ID`. The free plan keeps about 30 days, so schedule collection. |
+| X | Followers, plus impressions, likes, reposts, and (with xurl) link clicks and engagements for **only the posts published through `podcast_post_to_x`**, credited to their episode | Same setup as posting to X. Post ids come from the post log, so the timeline is never scanned and a run costs about one read per 100 posts. Posts newer than `X_LOOKBACK_DAYS` (30) are refreshed each run. Without xurl: `X_BEARER_TOKEN` + `X_USERNAME` for public counts. |
+
+Collect and write the dashboard (`$DATA_DIR/metrics/dashboard.html`, a single offline file):
+
+```bash
+uv run python -m metrics.collect --report     # first run backfills METRICS_BACKFILL_DAYS (90)
+```
+
+Schedule it daily so short-retention sources never lose history. `bin/collect-metrics.sh` wraps the command for cron or a systemd user timer:
+
+```bash
+# crontab -e
+15 6 * * * /path/to/podcast_server/bin/collect-metrics.sh >> /path/to/my-show-data/metrics/collect.log 2>&1
+```
+
+To add a source (YouTube, a hosting platform's CSV export, a newsletter), subclass `metrics.collectors.base.Collector` (see `metrics/collectors/op3.py` for a complete example), keep it in your own package, and list it in `METRICS_EXTRA_COLLECTORS=["my_show_metrics.youtube:YouTubeCollector"]`. Its metrics appear in the dashboard and MCP tools without engine changes.
 
 ## Day-to-Day
 
@@ -159,6 +193,7 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
 | Rebuild the feed (and pages) | `podcast_rebuild_feed` tool, or `uv run python -m core.site` |
 | Back up | Set `HF_BACKUP_REPO`, run `hf auth login` once, then `uv run python scripts/backup_to_hf.py` after each publish. It mirrors every MP3, a catalog snapshot, and your show assets to a **private** Hugging Face dataset, uploading only what changed. |
 | Re-check setup | `uv run python -m core.doctor` |
+| Check audience numbers | Agent: `podcast_metrics_summary`; or open `$DATA_DIR/metrics/dashboard.html` (refreshed by the daily `bin/collect-metrics.sh`) |
 
 ## Customizing
 

@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from core.config import settings
 from core.net import open_https
 from core.storage import R2StorageClient
+from exporters.x_post import XPostError, xurl_command
 
 Check = tuple[str, str]  # (status, detail)
 
@@ -113,6 +114,36 @@ def check_optional() -> Check:
     return "PASS", f"enabled: {', '.join(enabled) or 'none'}"
 
 
+def check_x_posting() -> Check:
+    """X posting is off, or xurl resolves for X_USERNAME (the login itself is checked with `xurl whoami`)."""
+    if not settings.x_username:
+        return "PASS", "off (set X_USERNAME and log in with xurl to enable)"
+    try:
+        command = xurl_command()
+    except XPostError as e:
+        return "WARN", str(e)
+    return "PASS", f"posting as @{settings.x_username} via {command[0]}; verify the login with `xurl whoami`"
+
+
+def check_metrics_sources() -> Check:
+    """Report which metric collectors can run; WARN if one named in METRICS_SOURCES can't."""
+    # Imported here so a broken extra collector only fails this check, not the whole doctor.
+    from metrics.registry import available_collectors
+
+    ready, missing = [], []
+    for name, cls in available_collectors().items():
+        problem = cls().config_problem()
+        if problem is None:
+            ready.append(name)
+        else:
+            missing.append((name, problem))
+    blocked = [(n, p) for n, p in missing if n in settings.metrics_sources]
+    if blocked:
+        return "WARN", "; ".join(f"{n}: {p}" for n, p in blocked)
+    unset = f"; not configured: {', '.join(n for n, _ in missing)}" if missing else ""
+    return "PASS", f"ready: {', '.join(ready) or 'none'}{unset}"
+
+
 CHECKS: list[tuple[str, Callable[[], Check]]] = [
     ("R2 credentials", check_r2_credentials),
     ("Audio domain", check_public_domain),
@@ -120,6 +151,8 @@ CHECKS: list[tuple[str, Callable[[], Check]]] = [
     ("Cover art", check_artwork),
     ("Feed URL", check_feed_url),
     ("Optional integrations", check_optional),
+    ("X posting", check_x_posting),
+    ("Metrics sources", check_metrics_sources),
 ]
 
 

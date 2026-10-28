@@ -35,7 +35,12 @@ Never copy playbook content, show data, or show-specific values into this reposi
 | `podcast_upload_media_asset` | `file_path, target_filename, prefix` | Uploads images/video (GIF, PNG, JPEG, WebP, MP4, WebM, MOV) to R2. Refuses other types and never overwrites an existing key. |
 | `podcast_publish_to_youtube` | `video_path, title, description, tags, privacy_status` | Resumable upload to the authenticated YouTube channel. |
 | `podcast_draft_social` | `title, guest_name, core_tension, technical_specs, episode_url, youtube_url` | Fills the show's social post templates (`$DATA_DIR/templates/`). |
+| `podcast_post_to_x` | `text, media_path, dry_run, episode_slug` | Posts to X as `X_USERNAME` through xurl, with one optional image, GIF, or video. Refuses non-media files before uploading. Logs each accepted post (with `episode_slug`) to `$DATA_DIR/social/x_posts.jsonl`; X metrics cover only logged posts. **Live and public: only post text and media the human approved verbatim.** |
 | `podcast_stage_thumbnail` | `prompt_text, output_filename, style` | Builds a 16:9 thumbnail prompt and returns where to save the image. Does not generate it. |
+| `podcast_metrics_collect` | `sources, days` | Read-only: fetches audience metrics from every configured source (or the named ones) into `$DATA_DIR/metrics.db`, resuming where each left off. Returns per-source `ok` / `skipped` (with what to configure) / `failed`. |
+| `podcast_metrics_summary` | `days=30` | Headline numbers vs the previous period, top episodes, top apps/countries, and each source's freshness. |
+| `podcast_episode_metrics` | `slug` | Daily downloads/listens per source for one episode, plus the social posts that link to it. |
+| `podcast_metrics_report` | `days=90` | Writes the offline HTML dashboard (`$DATA_DIR/metrics/dashboard.html`) and returns its path. |
 
 ## 4. Publishing Runbook (generic)
 
@@ -50,7 +55,8 @@ Never copy playbook content, show data, or show-specific values into this reposi
 3. **Human review gate. Stop and present the package. Do not publish without explicit approval.**
 4. **Publish:** `podcast_publish(...)`. Check the response: `git_deploy.status` should be `pushed` (astro) or `not_applicable` (none mode, where the feed is live once uploaded). If it's `skipped` or `failed`, see section 5.
 5. **Verify:** the audio URL returns HTTP 206 for a range request, and `PODCAST_FEED_URL` returns 200 and lists the episode.
-6. **Back up:** `uv run python scripts/backup_to_hf.py` (if `HF_BACKUP_REPO` is set).
+6. **Promote (optional):** draft with `podcast_draft_social`, get explicit approval of the exact text and media, optionally check with `podcast_post_to_x(..., dry_run=true)`, then post with `episode_slug` set so its metrics are credited to the episode. Return the post URL. If a post call fails, read `$DATA_DIR/social/x_posts.jsonl` before retrying so a post that went through isn't sent twice.
+7. **Back up:** `uv run python scripts/backup_to_hf.py` (if `HF_BACKUP_REPO` is set).
 
 ## 5. Common Operations
 
@@ -62,6 +68,8 @@ Never copy playbook content, show data, or show-specific values into this reposi
 - **Before bulk catalog edits,** back it up: `sqlite3 "$DATA_DIR/catalog.db" ".backup $DATA_DIR/catalog.db.bak_$(date +%Y%m%d_%H%M%S)"`.
 - **Deploy skipped or failed (astro mode):** switch the site repo to `WEBSITE_BRANCH`, then re-run `deploy_site(...)`. Never stage the site repo with `git add .`; only the generated paths (feed file, episode pages, blog post) may be committed.
 - **Import a back catalog:** `uv run python -m importers.rss <old-feed-url> --mirror`.
+- **Answer "how is the show doing?":** call `podcast_metrics_summary` (run `podcast_metrics_collect` first if a source's `last_run_at` is more than a day old). Report numbers with their source and basis, because they measure different things: OP3 `downloads` are bot-filtered podcast-app downloads; Cloudflare `est_listens` is bytes served ÷ file size across every client; X `impressions` count views of posts published through `podcast_post_to_x` (never the rest of the account). Never add them together. A `first 7d` value of `null` means the source's data starts after that episode's release, not zero.
+- **Metrics data is disposable:** `metrics.db` can be deleted and re-collected (within each source's retention: Cloudflare keeps about 30 days on the free plan, OP3 keeps everything). Never write to `catalog.db` from metrics code.
 
 ## 6. Invariants (never violate)
 

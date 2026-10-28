@@ -8,6 +8,7 @@ Set `PODCAST_SERVER_ENV_FILE` to load a different env file (e.g. one per show).
 """
 
 import os
+import uuid
 from pathlib import Path
 from typing import Literal, Self
 
@@ -17,6 +18,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Repo root, resolved from this file so the engine works from any checkout location.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = Path(os.environ.get("PODCAST_SERVER_ENV_FILE", PROJECT_ROOT / ".env"))
+# Namespace the Podcasting 2.0 spec fixes for deriving <podcast:guid> from a feed URL,
+# so every host (and OP3, Podcast Index) computes the same id for the same feed.
+PODCAST_GUID_NAMESPACE = uuid.UUID("ead4c236-bf58-58c6-a2c6-a6b28d128cb6")
+
+
+def podcast_guid_for_feed(feed_url: str) -> str:
+    """Derive the Podcasting 2.0 show GUID: UUIDv5 of the feed URL without scheme or trailing slashes."""
+    bare = feed_url.split("://", 1)[-1].rstrip("/")
+    return str(uuid.uuid5(PODCAST_GUID_NAMESPACE, bare))
 
 
 class Settings(BaseSettings):
@@ -33,6 +43,10 @@ class Settings(BaseSettings):
     podcast_feed_url: str = Field(description="Public URL of the RSS feed")
     podcast_image_url: str = Field(description="Square artwork, 1400-3000 px, JPEG or PNG")
     episode_guid_prefix: str = Field(description="Prefix for GUIDs minted at publish, e.g. 'myshow'")
+    podcast_guid: str | None = Field(
+        default=None,
+        description="Show-level <podcast:guid>; derived from PODCAST_FEED_URL when unset. Keep it fixed if the feed moves.",
+    )
 
     # --- Show metadata (optional) ---
     podcast_category: str = "Technology"
@@ -71,13 +85,41 @@ class Settings(BaseSettings):
     youtube_token_path: Path = Path.home() / ".config" / "podcast_server" / "youtube_token.json"
     hf_backup_repo: str | None = Field(default=None, description="Private HF dataset id for backups")
     thumbnail_style: str = "clean, high-contrast studio aesthetic"
+    # X posting goes through the xurl CLI, which keeps its own OAuth tokens; the engine never sees them.
+    x_username: str | None = Field(default=None, description="X handle to post as (no @); unset disables posting")
+    xurl_app: str | None = Field(default=None, description="App name inside the xurl auth file")
+    xurl_path: Path | None = Field(default=None, description="xurl binary; default: first xurl on PATH")
+
+    # --- Metrics (all optional; each source is collected only once it's configured) ---
+    metrics_db_path: Path | None = None
+    metrics_sources: list[str] = Field(
+        default_factory=list, description="Collector names to run; empty means every configured collector"
+    )
+    metrics_extra_collectors: list[str] = Field(
+        default_factory=list, description="Extra collectors as 'module:ClassName' import paths"
+    )
+    metrics_backfill_days: int = Field(default=90, ge=1, description="History fetched on a source's first run")
+    op3_api_token: str | None = Field(default=None, description="Bearer token from op3.dev/api/keys")
+    op3_show_uuid: str | None = Field(
+        default=None, description="OP3 show id; looked up by <podcast:guid>, then feed URL, when unset"
+    )
+    cloudflare_api_token: str | None = Field(default=None, description="API token with Zone > Analytics > Read")
+    cloudflare_zone_id: str | None = Field(default=None, description="Zone that serves R2_PUBLIC_DOMAIN")
+    # X metrics use the posting account above (X_USERNAME via xurl, which adds owner-only
+    # metrics); X_BEARER_TOKEN is the fallback for reading public counts without xurl.
+    x_bearer_token: str | None = Field(default=None, description="X app-only token: public post metrics only")
+    x_lookback_days: int = Field(default=30, ge=1, description="Re-read metrics for engine-published posts this recent")
 
     @model_validator(mode="after")
     def _check_and_normalize(self) -> Self:
         """Fill derived defaults and reject combinations that can't work."""
         self.r2_public_domain = self.r2_public_domain.rstrip("/")
+        if self.podcast_guid is None:
+            self.podcast_guid = podcast_guid_for_feed(self.podcast_feed_url)
         if self.database_path is None:
             self.database_path = self.data_dir / "catalog.db"
+        if self.metrics_db_path is None:
+            self.metrics_db_path = self.data_dir / "metrics.db"
         if self.site_mode == "astro" and self.website_path is None:
             raise ValueError("SITE_MODE=astro needs WEBSITE_PATH (the local checkout of your site repo).")
         return self
@@ -135,6 +177,16 @@ class Settings(BaseSettings):
     def templates_dir(self) -> Path:
         """Optional per-show text templates (e.g. social posts) overriding the built-in ones."""
         return self.data_dir / "templates"
+
+    @property
+    def metrics_report_path(self) -> Path:
+        """Self-contained HTML metrics dashboard written by `python -m metrics.report`."""
+        return self.data_dir / "metrics" / "dashboard.html"
+
+    @property
+    def x_post_log_path(self) -> Path:
+        """Append-only record of every post X accepted (one JSON object per line)."""
+        return self.data_dir / "social" / "x_posts.jsonl"
 
     @property
     def excluded_episodes_file(self) -> Path:
