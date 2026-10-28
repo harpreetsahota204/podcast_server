@@ -196,7 +196,7 @@ class CloudflareCollector(Collector):
         )
         if reply.get("errors"):
             messages = "; ".join(e.get("message", "?") for e in reply["errors"])
-            hint = " Edit the token: add Zone > Analytics > Read for this zone." if "does not have permission" in messages else ""
+            hint = " Edit the token: add Zone > Analytics > Read (shown as Domain > Analytics > Read in newer dashboards) for this zone." if "does not have permission" in messages else ""
             raise CollectorError(f"Cloudflare GraphQL error: {messages}{hint}")
         zones = (reply.get("data") or {}).get("viewer", {}).get("zones") or []
         if not zones:

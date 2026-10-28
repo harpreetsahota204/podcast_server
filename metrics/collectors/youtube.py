@@ -32,6 +32,8 @@ VIDEO = "video"
 DATA_API_BATCH = 50
 # YouTube Analytics revises recent days; always re-fetch at least this many.
 ANALYTICS_SETTLE_DAYS = 7
+# Retries for transient Google API errors (googleapiclient backs off exponentially between them).
+RETRIES = 3
 # Analytics API metric name → stored metric name.
 ANALYTICS_METRICS = {"views": "views", "estimatedMinutesWatched": "watch_minutes", "subscribersGained": "subscribers_gained"}
 VIDEO_STATS = {"viewCount": "lifetime_views", "likeCount": "likes", "commentCount": "comments"}
@@ -39,9 +41,13 @@ CHANNEL_STATS = {"subscriberCount": "subscribers", "viewCount": "channel_views",
 
 
 def _execute(request: Any, what: str) -> dict[str, Any]:
-    """Run a Google API request; HTTP errors become CollectorError with YouTube's reason (no credentials)."""
+    """Run a Google API request; HTTP errors become CollectorError with YouTube's reason (no credentials).
+
+    Transient failures (5xx, 429) are retried with the client's exponential backoff, since
+    one flaky query would otherwise skip the whole day's analytics.
+    """
     try:
-        return request.execute()
+        return request.execute(num_retries=RETRIES)
     except HttpError as e:
         raise CollectorError(f"YouTube refused {what}: HTTP {e.status_code} {e.reason}") from None
 
@@ -114,8 +120,12 @@ class YouTubeCollector(Collector):
 
         if analytics is None:
             result.notes.append(f"daily views and watch time need the {ANALYTICS_SCOPE} scope; re-authorize to add it")
-        else:
+            return result
+        # An Analytics outage or disabled API must not discard the lifetime counts collected above.
+        try:
             self._add_analytics(result, analytics, tracked, ctx)
+        except CollectorError as e:
+            result.notes.append(f"daily analytics skipped: {e}")
         return result
 
     @staticmethod
@@ -137,10 +147,14 @@ class YouTubeCollector(Collector):
     def _add_analytics(
         result: CollectionResult, analytics: Resource, tracked: dict[str, str | None], ctx: CollectionContext
     ) -> None:
-        """Daily metrics per tracked video (one query each), with show totals summed over them."""
+        """Daily metrics per tracked video (one query each), with show totals summed over them.
+
+        Results are added only after every query succeeds, so a failure part-way never
+        stores (or replaces stored days with) a partial set.
+        """
         start = min(ctx.window.start, ctx.today - timedelta(days=ANALYTICS_SETTLE_DAYS))
         end = ctx.window.end - timedelta(days=1)  # the API's endDate is inclusive
-        result.replace_start, result.replace_end = start.isoformat(), ctx.window.end_iso
+        observations: list[Observation] = []
         show_totals: Counter[tuple[str, str]] = Counter()
         for video_id, slug in tracked.items():
             reply = _execute(
@@ -153,8 +167,10 @@ class YouTubeCollector(Collector):
             # Columns come back in request order after the `day` dimension.
             for day, *values in reply.get("rows", []):
                 for metric, value in zip(ANALYTICS_METRICS.values(), values, strict=True):
-                    result.observations.append(Observation(
+                    observations.append(Observation(
                         "youtube", metric, float(value), day, entity_type=VIDEO, entity_id=video_id, episode_slug=slug,
                     ))
                     show_totals[(day, metric)] += float(value)
-        result.observations += [Observation("youtube", metric, value, day) for (day, metric), value in show_totals.items()]
+        observations += [Observation("youtube", metric, value, day) for (day, metric), value in show_totals.items()]
+        result.observations += observations
+        result.replace_start, result.replace_end = start.isoformat(), ctx.window.end_iso

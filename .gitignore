@@ -9,3 +9,6 @@ __pycache__/
 # Show data and show-specific research live outside the engine (DATA_DIR); these are local symlinks.
 /data
 /intelligence
+
+# Cloudflare CLI cache (account ids); created when `cf` runs from this directory.
+.cloudflare/

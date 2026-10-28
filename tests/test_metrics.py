@@ -569,6 +569,22 @@ class YouTubeTests(TempDirTestCase):
         self.assertEqual(values[("v1", "watch_minutes", "2026-03-08")], 12.5)
         self.assertEqual(values[("", "views", "2026-03-08")], 8)
 
+    def test_analytics_failure_keeps_lifetime_counts(self) -> None:
+        """A disabled Analytics API becomes a note; snapshots survive and no day window is replaced."""
+        from metrics.collectors.youtube import YouTubeCollector
+
+        settings.youtube_videos_file.write_text(json.dumps({"videos": [{"video_id": "v1", "episode_slug": "ep-a"}]}))
+        analytics = mock.MagicMock()
+        analytics.reports.return_value.query.return_value.execute.side_effect = CollectorError("HTTP 403 disabled")
+        collector = YouTubeCollector()
+        youtube = self.youtube_mock([self.video("v1", viewCount="7")])
+        with mock.patch.object(collector, "services", return_value=(youtube, analytics)), \
+                mock.patch("metrics.collectors.youtube._execute", side_effect=lambda req, what: req.execute(num_retries=3)):
+            result = collector.collect(make_ctx())
+        self.assertIn("daily analytics skipped", result.notes[-1])
+        self.assertIsNone(result.replace_start)
+        self.assertIn(("v1", "lifetime_views"), {(o.entity_id, o.metric) for o in result.observations})
+
     def test_upload_logs_video_with_episode(self) -> None:
         """A finished upload is logged with its episode; a bad slug is refused before YouTube is contacted."""
         from exporters.youtube import upload_video_to_youtube
