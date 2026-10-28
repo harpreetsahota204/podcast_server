@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 
 from core.config import settings
 from core.db import CatalogDB
-from core.formatting import format_duration, op3_url, parse_duration, slugify
+from core.formatting import format_duration, is_slug, op3_url, parse_duration, slugify
 from core.net import open_https
 from core.storage import sync_episodes_audio
 
@@ -37,7 +37,6 @@ NS = {
     "itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd",
     "content": "http://purl.org/rss/1.0/modules/content/",
 }
-_SLUG_SAFE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
 def read_feed(source: str) -> bytes:
@@ -59,7 +58,7 @@ def _int_or_none(text: str | None) -> int | None:
 def _slug_for(item: ET.Element, title: str, taken: set[str]) -> str:
     """Prefer the last path segment of the episode's <link>; fall back to the slugified title; dedupe."""
     link_tail = urlparse((item.findtext("link") or "").strip()).path.rstrip("/").rsplit("/", 1)[-1].lower()
-    base = link_tail if _SLUG_SAFE.fullmatch(link_tail) else slugify(title) or "episode"
+    base = link_tail if is_slug(link_tail) else slugify(title) or "episode"
     slug, n = base, 2
     while slug in taken:
         slug, n = f"{base}-{n}", n + 1

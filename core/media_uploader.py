@@ -4,14 +4,11 @@ The bucket is world-readable, so only known media extensions are accepted:
 an agent must not be able to publish arbitrary local files such as `.env`.
 """
 
-import logging
 from pathlib import Path
 from typing import Any
 
 from core.formatting import slugify, validate_slug
 from core.storage import R2StorageClient
-
-logger = logging.getLogger("media_uploader")
 
 # Explicit map instead of `mimetypes`, whose answers vary by OS. SVG is excluded
 # because it can carry script.

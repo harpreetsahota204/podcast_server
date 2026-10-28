@@ -53,7 +53,6 @@ def podcast_status() -> dict[str, Any]:
         "feed_url": settings.podcast_feed_url,
         "public_audio_domain": settings.r2_public_domain,
         "use_op3_analytics": settings.use_op3_prefix,
-        "storage_backend": settings.storage_backend,
         "r2_storage_ready": R2StorageClient().is_configured(),
         "total_episodes_in_catalog": total_episodes,
         "audio_synced_to_r2": synced_audio,
@@ -144,12 +143,11 @@ def podcast_stage_from_descript(
     links: list[str] | None = None,
 ) -> dict[str, Any]:
     """
-    Stage and assemble a release package from Descript export data:
-    1. Downloads master audio from Descript published URL to data/raw/<slug>.mp3 (or uses local_audio_path).
-    2. Runs mutagen pre-flight inspection (audio duration, file size, bitrate).
-    3. Parses markers into timestamped chapter objects from the transcript.
-    4. Formats draft show notes with chapters, guest info, and links.
-    5. Returns the staged package to the agent/human for review gate (Stage 3).
+    Stage a release package from a Descript export for human review:
+    1. Downloads the master audio to DATA_DIR/raw/<slug>.mp3 (or uses local_audio_path).
+    2. Measures duration, file size, and bitrate.
+    3. Parses transcript markers into timestamped chapters.
+    4. Drafts show notes with chapters, guest info, and links.
     """
     validate_slug(slug)
 
@@ -183,7 +181,7 @@ def podcast_stage_from_descript(
         "chapter_count": len(chapters),
         "chapters": chapters,
         "draft_show_notes_markdown": formatted_show_notes,
-        "next_step": "Human Review Gate (Stage 3): Review title options, chapter timestamps, and companion blog draft before calling podcast_publish.",
+        "next_step": "Human review gate: get explicit approval of title, show notes, and chapters before calling podcast_publish.",
     }
 
 
@@ -203,13 +201,11 @@ def podcast_publish(
     blog_draft: bool = False,
 ) -> dict[str, Any]:
     """
-    Publish a new podcast episode end-to-end:
-    1. Validates the slug is new and measures audio duration and byte length with mutagen.
-    2. Uploads audio file directly to Cloudflare R2 bucket.
-    3. Records metadata into SQLite catalog.
-    4. Regenerates the public RSS feed and exports Astro Markdown to website.
-    5. Optionally writes a companion blog post (astro mode).
-    6. Astro mode: commits only the generated website files and pushes the site branch.
+    Publish a new episode end-to-end (only after human approval):
+    1. Rejects invalid, already-published, or excluded slugs, and measures the audio, before any upload.
+    2. Uploads the MP3 to R2 and inserts the catalog row with a new, permanent GUID.
+    3. Optionally writes a companion blog post (astro mode).
+    4. Rebuilds the feed (and episode pages) and deploys: R2 feed upload, or a scoped git push.
     """
     ep_slug = validate_slug(slug or slugify(title))
 
@@ -254,7 +250,7 @@ def podcast_publish(
         "audio_synced": 1,
     }
 
-    # Optional companion field note shares the episode slug.
+    # Optional companion blog post shares the episode slug.
     blog_path: Path | None = None
     if blog_content_markdown and settings.site_mode == "astro":
         blog_path = create_blog_post(
@@ -345,9 +341,7 @@ def podcast_stage_thumbnail(
     style: str | None = None,
 ) -> dict[str, Any]:
     """Builds a 16:9 YouTube thumbnail prompt and returns the local path and R2 key the rendered image should use. Does not generate the image."""
-    return generate_youtube_thumbnail(
-        prompt_text=prompt_text, output_filename=output_filename, style=style or settings.thumbnail_style
-    )
+    return generate_youtube_thumbnail(prompt_text=prompt_text, output_filename=output_filename, style=style)
 
 
 if __name__ == "__main__":

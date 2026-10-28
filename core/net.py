@@ -8,7 +8,7 @@ import urllib.request
 from http.client import HTTPResponse
 from urllib.parse import urlparse
 
-USER_AGENT = "ArtistsOfIntelligenceEngine/1.0"
+USER_AGENT = "podcast_server/1.0"
 # Generous enough for slow CDNs, short enough that a dead host can't hang an MCP call forever.
 DEFAULT_TIMEOUT_SECONDS = 60
 

@@ -43,11 +43,21 @@ def slugify(text: str) -> str:
     return re.sub(r"[-\s_]+", "-", text).strip("-")
 
 
+def is_slug(text: str) -> bool:
+    """True if `text` is safe to use as a slug (filename, object key, URL segment)."""
+    return _SLUG_RE.fullmatch(text) is not None
+
+
 def validate_slug(slug: str) -> str:
     """Return `slug` unchanged if safe for filenames and object keys, else raise ValueError."""
-    if not _SLUG_RE.fullmatch(slug):
+    if not is_slug(slug):
         raise ValueError(f"Invalid slug {slug!r}: use lowercase letters, digits, and hyphens only.")
     return slug
+
+
+def one_line(text: str) -> str:
+    """Collapse line breaks (LF or CRLF) to spaces, for single-line fields like frontmatter descriptions."""
+    return text.replace("\r", "").replace("\n", " ")
 
 
 def op3_url(audio_url: str) -> str:

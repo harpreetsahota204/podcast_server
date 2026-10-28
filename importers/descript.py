@@ -1,12 +1,13 @@
 """Turns a Descript export (Markdown transcript + published audio URL) into staging inputs.
 
 Handles chapter extraction from markers, authenticated audio download, and
-show-notes formatting with scrubbable bold timestamps.
+show-notes formatting with bold, linkable chapter timestamps.
 """
 
 import logging
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -78,8 +79,7 @@ def download_audio_from_url(audio_url: str, target_path: Path) -> Path:
     logger.info("Downloading master audio to %s", target_path)
     part_path = target_path.with_suffix(target_path.suffix + ".part")
     with open_https(audio_url, headers) as resp, open(part_path, "wb") as f:
-        while chunk := resp.read(_DOWNLOAD_CHUNK_BYTES):
-            f.write(chunk)
+        shutil.copyfileobj(resp, f, length=_DOWNLOAD_CHUNK_BYTES)
     os.replace(part_path, target_path)
     return target_path
 
@@ -90,7 +90,7 @@ def format_show_notes_with_chapters(
     guest_info: str | None = None,
     links: list[str] | None = None,
 ) -> str:
-    """Assemble show notes Markdown; chapters use `**MM:SS**` so the site player can scrub to them."""
+    """Assemble show notes Markdown; chapters use `**MM:SS**` so players and websites can link to them."""
     sections = []
 
     if summary:

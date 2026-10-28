@@ -56,7 +56,7 @@ class R2StorageClient:
     @staticmethod
     def public_url(key: str) -> str:
         """Public CDN URL for an object key."""
-        return f"{settings.r2_public_domain.rstrip('/')}/{key}"
+        return f"{settings.r2_public_domain}/{key}"
 
     def object_size(self, key: str) -> int | None:
         """Byte length of `key` in the bucket, or None if it doesn't exist."""

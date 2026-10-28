@@ -13,16 +13,16 @@ from core.formatting import validate_slug
 def generate_youtube_thumbnail(
     prompt_text: str,
     output_filename: str,
-    style: str = "clean, high-contrast studio aesthetic",
+    style: str | None = None,
 ) -> dict[str, Any]:
-    """Return a 16:9 thumbnail prompt plus the local path and R2 key the image should use."""
+    """Return a 16:9 thumbnail prompt plus the local path and R2 key the image should use (style defaults to THUMBNAIL_STYLE)."""
     validate_slug(output_filename)
     # Create the staging dir up front so the image generator can write straight into it.
     settings.thumbnails_dir.mkdir(parents=True, exist_ok=True)
 
     full_prompt = (
         f"{prompt_text}. YouTube video thumbnail composition, 16:9 wide, clean focal subject, "
-        f"{style}, professional studio lighting, uncluttered background, dramatic lighting, 8k resolution."
+        f"{style or settings.thumbnail_style}, professional studio lighting, uncluttered background, dramatic lighting, 8k resolution."
     )
 
     return {

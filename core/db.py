@@ -1,4 +1,4 @@
-"""SQLite catalog of episodes (`data/catalog.db`), the engine's source of truth.
+"""SQLite catalog of episodes (`$DATA_DIR/catalog.db`), the engine's source of truth.
 
 The `guid` column must never change once written: Apple and Spotify key
 played/unplayed state on it.

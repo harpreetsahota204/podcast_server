@@ -11,7 +11,7 @@ from typing import Any
 
 from core.config import settings
 from core.db import CatalogDB
-from core.formatting import yaml_str
+from core.formatting import one_line, yaml_str
 
 logger = logging.getLogger("astro_exporter")
 
@@ -19,8 +19,8 @@ logger = logging.getLogger("astro_exporter")
 def render_episode_markdown(ep: dict[str, Any]) -> str:
     """Render one episode as Markdown with YAML frontmatter matching the site's content schema."""
     enclosure_url = ep["audio_op3_url"] if settings.use_op3_prefix else ep["audio_url"]
-    # Frontmatter descriptions are single-line (some hosts' summaries use CRLF); fall back to the title.
-    description = (ep["summary"] or ep["title"]).replace("\r", "").replace("\n", " ")
+    # Frontmatter descriptions are single-line; fall back to the title.
+    description = one_line(ep["summary"] or ep["title"])
     episode_number = ep["episode_number"] if ep["episode_number"] is not None else "null"
     tags = json.loads(ep["tags"] or "[]")
     # Prefer Markdown notes; imports from other hosts may only have HTML.
@@ -68,9 +68,3 @@ def export_astro_markdown(db: CatalogDB) -> int:
     )
     logger.info("Astro export: %d changed file(s) in %s", written, target_dir)
     return written
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    with CatalogDB(settings.database_path) as catalog:
-        export_astro_markdown(catalog)

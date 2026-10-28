@@ -42,7 +42,6 @@ class Settings(BaseSettings):
     default_tags: list[str] = Field(default_factory=list, description="Tags used when a tool call gives none")
 
     # --- Storage (R2 credentials are only needed for uploads) ---
-    storage_backend: str = "r2"
     r2_account_id: str | None = None
     r2_access_key_id: str | None = None
     r2_secret_access_key: str | None = None
