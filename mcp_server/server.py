@@ -13,14 +13,15 @@ from typing import Any
 from fastmcp import FastMCP
 
 from core.audio import inspect_audio
-from core.config import settings
+from core.backup import backup_status, start_backup
+from core.config import PROJECT_ROOT, settings
 from core.db import CatalogDB
 from core.formatting import op3_url, slugify, validate_slug
 from core.media_uploader import upload_blog_media
 from core.site import deploy_site, rebuild_site
 from core.storage import R2StorageClient
 from core.thumbnail import generate_youtube_thumbnail, render_thumbnail
-from exporters.blog_post import create_blog_post
+from exporters.blog_post import blog_post_path, create_blog_post
 from exporters.social import draft_social_package
 from exporters.x_post import post_to_x
 from exporters.youtube import PrivacyStatus, set_video_thumbnail, upload_video_to_youtube
@@ -34,7 +35,34 @@ from metrics.collect import run_collection
 from metrics.report import write_report
 
 logger = logging.getLogger("podcast_server")
-mcp = FastMCP("podcast-server")
+
+# Sent to every client when it connects, so an agent gets the rules even if nobody points it at the docs.
+INSTRUCTIONS = f"""\
+Self-hosted podcast publishing engine. Before any podcast task, read the show playbook \
+({settings.data_dir / "PLAYBOOK.md"}) and the engine's runbook ({PROJECT_ROOT / "AGENTS.md"}); \
+the playbook wins on anything show-specific.
+Rules that always apply:
+- Nothing goes public without explicit human approval of the exact content. Public tools: podcast_publish, \
+podcast_update_episode, podcast_deploy_site, podcast_post_to_x, podcast_publish_to_youtube, \
+podcast_set_youtube_thumbnail.
+- Episode GUIDs and slugs are permanent, and excluded episodes stay excluded. When a tool refuses, report why; \
+never work around it.
+- If a public call fails, read {settings.data_dir / "social"}/*.jsonl before retrying, so nothing is posted twice.
+- Use these tools instead of editing catalog.db, the website repo, or R2 directly.
+- After publishing or editing an episode, run podcast_backup."""
+
+mcp = FastMCP("podcast-server", instructions=INSTRUCTIONS)
+
+# MCP tool annotations: clients use them to decide which calls run without asking the human.
+READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
+# Writes local files only (staging, renders, reports); never overwrites anything public.
+LOCAL_WRITE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+# Talks to outside services but only adds or refreshes data, and repeating the call changes nothing more.
+ADDITIVE_EXTERNAL = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+# Changes what the public sees; safe to retry because a repeat has no further effect.
+PUBLIC_EDIT = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True}
+# Irreversible public releases; a repeat would publish or post a second time.
+PUBLIC_RELEASE = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True}
 
 MAX_LIST_LIMIT = 200
 
@@ -44,7 +72,7 @@ def _open_catalog() -> CatalogDB:
     return CatalogDB(settings.database_path)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def podcast_status() -> dict[str, Any]:
     """Get overall health and statistics of the podcast catalog and audio hosting."""
     with _open_catalog() as db:
@@ -74,13 +102,13 @@ def podcast_status() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def podcast_inspect(audio_path: str) -> dict[str, Any]:
     """Inspect a local audio MP3 file to extract exact duration, file size, bitrate, and sample rate."""
     return inspect_audio(Path(audio_path))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def podcast_list_episodes(limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
     """List episodes (newest first, max 200 per call) with publication date, duration, and audio sync status."""
     # Clamp agent-supplied paging so one call can't dump the whole catalog (or pass a negative "no limit").
@@ -102,21 +130,21 @@ def podcast_list_episodes(limit: int = 10, offset: int = 0) -> list[dict[str, An
     ]
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def podcast_get_episode(slug: str) -> dict[str, Any] | None:
     """Fetch complete metadata, show notes, and audio links for a specific episode by its slug."""
     with _open_catalog() as db:
         return db.get_episode_by_slug(slug)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ADDITIVE_EXTERNAL)
 def podcast_rebuild_feed() -> dict[str, Any]:
-    """Regenerate the RSS feed and publish it (astro mode: also sync episode pages into the website repo; no deploy)."""
+    """Regenerate the RSS feed and episode pages from the catalog. Astro mode: writes them into the website repo; push with podcast_deploy_site. None mode: uploads the feed to R2, live at once."""
     with _open_catalog() as db:
         return {"status": "success", **rebuild_site(db)}
 
 
-@mcp.tool()
+@mcp.tool(annotations={**LOCAL_WRITE, "destructiveHint": True})  # replaces an existing post with the same slug
 def podcast_create_blog(
     slug: str,
     title: str,
@@ -137,7 +165,7 @@ def podcast_create_blog(
     return {"status": "created", "file_path": str(output_path), "slug": slug, "draft": draft}
 
 
-@mcp.tool()
+@mcp.tool(annotations=ADDITIVE_EXTERNAL)
 def podcast_stage_from_descript(
     transcript_markdown: str,
     slug: str,
@@ -190,7 +218,7 @@ def podcast_stage_from_descript(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=PUBLIC_RELEASE)
 def podcast_publish(
     audio_file_path: str,
     title: str,
@@ -291,7 +319,53 @@ def podcast_publish(
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=PUBLIC_EDIT)
+def podcast_update_episode(
+    slug: str,
+    title: str | None = None,
+    description: str | None = None,
+    show_notes_markdown: str | None = None,
+    tags: list[str] | None = None,
+    episode_number: int | None = None,
+    season: int | None = None,
+    explicit: bool | None = None,
+) -> dict[str, Any]:
+    """Edit a published episode (only after human approval of the new text): title, description, show notes, tags, number, season, or explicit flag. Omitted fields stay as they are; GUID, slug, and audio never change. Rebuilds the feed and pages. Astro mode: push them with podcast_deploy_site. None mode: the feed is live at once."""
+    # Parameter names match podcast_publish; map them onto catalog columns, dropping the ones not given.
+    columns = {
+        "title": title,
+        "summary": description,
+        "content_markdown": show_notes_markdown,
+        "tags": None if tags is None else json.dumps(tags),
+        "episode_number": episode_number,
+        "season": season,
+        "explicit": None if explicit is None else int(explicit),
+    }
+    changes = {column: value for column, value in columns.items() if value is not None}
+    with _open_catalog() as db:
+        if not db.update_episode(validate_slug(slug), changes):
+            raise ValueError(f"No episode with slug '{slug}'.")
+        site = rebuild_site(db)
+    return {"status": "updated", "slug": slug, "changed_fields": sorted(changes), **site}
+
+
+@mcp.tool(annotations=PUBLIC_EDIT)
+def podcast_deploy_site(message: str, blog_slugs: list[str] | None = None) -> dict[str, Any]:
+    """Push the rebuilt feed and episode pages live (only after human approval). Astro mode: commits only engine-generated files on WEBSITE_BRANCH with `message` and pushes; blog_slugs adds posts written by podcast_create_blog. None mode: nothing to do. Use after podcast_update_episode or podcast_rebuild_feed, or to retry a publish whose git_deploy was skipped or failed."""
+    blog_paths = [blog_post_path(slug) for slug in blog_slugs or []]
+    # deploy_paths skips missing files silently; a mistyped slug must fail loudly instead.
+    if missing := [str(path) for path in blog_paths if not path.exists()]:
+        raise FileNotFoundError(f"No blog post at: {', '.join(missing)}")
+    return deploy_site(message, blog_paths)
+
+
+@mcp.tool(annotations=ADDITIVE_EXTERNAL)
+def podcast_backup(check_only: bool = False) -> dict[str, Any]:
+    """Back up audio, catalog, and show assets to the private Hugging Face dataset (HF_BACKUP_REPO). Runs in the background because even an incremental run takes minutes: returns "started" (or "running") at once. Call again with check_only=true for "running", "completed", or "failed" plus the end of the log. Run after every publish or episode edit."""
+    return backup_status() if check_only else start_backup()
+
+
+@mcp.tool(annotations=ADDITIVE_EXTERNAL)
 def podcast_upload_media_asset(
     file_path: str,
     target_filename: str | None = None,
@@ -301,7 +375,7 @@ def podcast_upload_media_asset(
     return upload_blog_media(file_path=file_path, target_filename=target_filename, prefix=prefix)
 
 
-@mcp.tool()
+@mcp.tool(annotations=PUBLIC_RELEASE)
 def podcast_publish_to_youtube(
     video_path: str,
     title: str,
@@ -321,7 +395,7 @@ def podcast_publish_to_youtube(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def podcast_draft_social(
     title: str,
     guest_name: str,
@@ -341,7 +415,7 @@ def podcast_draft_social(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=PUBLIC_RELEASE)
 def podcast_post_to_x(
     text: str, media_path: str | None = None, dry_run: bool = False, episode_slug: str | None = None
 ) -> dict[str, Any]:
@@ -349,7 +423,7 @@ def podcast_post_to_x(
     return post_to_x(text=text, media_path=media_path, dry_run=dry_run, episode_slug=episode_slug)
 
 
-@mcp.tool()
+@mcp.tool(annotations=LOCAL_WRITE)
 def podcast_stage_thumbnail(
     prompt_text: str,
     output_filename: str,
@@ -359,7 +433,7 @@ def podcast_stage_thumbnail(
     return generate_youtube_thumbnail(prompt_text=prompt_text, output_filename=output_filename, style=style)
 
 
-@mcp.tool()
+@mcp.tool(annotations=LOCAL_WRITE)
 def podcast_render_thumbnail(
     base_image_path: str,
     headline_lines: list[str],
@@ -372,13 +446,13 @@ def podcast_render_thumbnail(
     return render_thumbnail(Path(base_image_path), headline_lines, output, label=label, accent_line=accent_line)
 
 
-@mcp.tool()
+@mcp.tool(annotations=PUBLIC_EDIT)
 def podcast_set_youtube_thumbnail(video_id: str, thumbnail_path: str, episode_slug: str | None = None) -> dict[str, Any]:
     """Sets a video's custom thumbnail on YouTube (public; only after the human approved the exact image). JPEG/PNG up to 2 MB. Logs the change so the metrics dashboard marks it; episode_slug defaults to the video's tracked episode."""
     return set_video_thumbnail(video_id=video_id, thumbnail_path=thumbnail_path, episode_slug=episode_slug)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ADDITIVE_EXTERNAL)
 def podcast_metrics_collect(sources: list[str] | None = None, days: int | None = None) -> list[dict[str, Any]]:
     """Fetch audience metrics (read-only API calls) into the local metrics store. Default: every configured source, resuming where each left off; `days` re-fetches that many days. Returns per-source status."""
     if days is not None and days < 1:
@@ -386,19 +460,19 @@ def podcast_metrics_collect(sources: list[str] | None = None, days: int | None =
     return run_collection(sources, days)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def podcast_metrics_summary(days: int = 30) -> dict[str, Any]:
     """Summarize collected audience metrics for the last `days` days: headline numbers vs the previous period, top episodes, top apps/countries, and each source's freshness."""
     return summarize(days=max(1, days))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def podcast_episode_metrics(slug: str) -> dict[str, Any]:
     """All collected metrics for one episode: daily downloads/listens per source and social posts linking to it."""
     return episode_metrics(validate_slug(slug))
 
 
-@mcp.tool()
+@mcp.tool(annotations=LOCAL_WRITE)
 def podcast_metrics_report(days: int = 90) -> dict[str, Any]:
     """Write the self-contained HTML metrics dashboard for the last `days` days and return its path."""
     return {"status": "written", "path": str(write_report(days=max(1, days)))}

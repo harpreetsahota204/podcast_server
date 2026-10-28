@@ -195,7 +195,7 @@ To add a source (YouTube, a hosting platform's CSV export, a newsletter), subcla
 | :--- | :--- |
 | Publish | Agent: `podcast_stage_from_descript` or `podcast_inspect` → your approval → `podcast_publish` |
 | Rebuild the feed (and pages) | `podcast_rebuild_feed` tool, or `uv run python -m core.site` |
-| Back up | Set `HF_BACKUP_REPO`, run `hf auth login` once, then `uv run python scripts/backup_to_hf.py` after each publish. It mirrors every MP3, a catalog snapshot, and your show assets to a **private** Hugging Face dataset, uploading only what changed. |
+| Back up | Set `HF_BACKUP_REPO`, run `hf auth login` once, then call the `podcast_backup` tool (or run `uv run python scripts/backup_to_hf.py`) after each publish. It mirrors every MP3, a catalog snapshot, and your show assets to a **private** Hugging Face dataset, uploading only what changed. |
 | Re-check setup | `uv run python -m core.doctor` |
 | Make a YouTube thumbnail | Agent: `podcast_stage_thumbnail` → renders the art → `podcast_render_thumbnail` → your approval → `podcast_set_youtube_thumbnail` |
 | Check audience numbers | Agent: `podcast_metrics_summary`; or open `$DATA_DIR/metrics/dashboard.html` (refreshed by the daily `bin/collect-metrics.sh`) |

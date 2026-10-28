@@ -11,7 +11,7 @@ A self-hosted podcast publishing engine that AI agents operate through MCP (Mode
 - **Feed:** RSS 2.0 + iTunes + Podcasting 2.0 (`<podcast:locked>`, `<podcast:guid>`), exact enclosure byte lengths, Markdown show notes rendered to `content:encoded`, optional OP3 analytics.
 - **Two site modes:** `none` serves the feed from your R2 domain, with no website needed. `astro` writes one Markdown page per episode into your site repo and pushes only those files.
 - **Migration:** a GUID-preserving importer for any host's RSS feed, with audio mirrored into R2.
-- **Agent surface:** 19 MCP tools covering staging (including Descript), publishing, blog posts, social drafts and X posts, media uploads, YouTube uploads and thumbnails, and audience metrics.
+- **Agent surface:** MCP tools covering staging (including Descript), publishing, episode edits, deploys, backups, blog posts, social drafts and X posts, media uploads, YouTube uploads and thumbnails, and audience metrics. Each tool carries MCP safety annotations (read-only, destructive, idempotent), and the server sends its operating rules to every client on connect.
 - **YouTube thumbnails:** your agent renders the art; the engine sets the headline in your show's fonts and colors (auto-fitted, clear of the duration badge, under 2 MB) and pushes it to YouTube after approval.
 - **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X and YouTube engagement for the show's own posts and videos, or your own) feed a local SQLite store, an offline HTML dashboard, and MCP tools agents can query.
 - **Safety:** see the list below; checks run before any upload.
@@ -142,7 +142,7 @@ Agents should read [`AGENTS.md`](./AGENTS.md) and then your `PLAYBOOK.md`.
 | Area | Tools |
 | :--- | :--- |
 | Catalog | `podcast_status`, `podcast_list_episodes`, `podcast_get_episode`, `podcast_inspect` |
-| Publishing | `podcast_stage_from_descript`, `podcast_publish`, `podcast_rebuild_feed` |
+| Publishing | `podcast_stage_from_descript`, `podcast_publish`, `podcast_update_episode`, `podcast_rebuild_feed`, `podcast_deploy_site`, `podcast_backup` |
 | Content | `podcast_create_blog`, `podcast_draft_social`, `podcast_stage_thumbnail`, `podcast_render_thumbnail` |
 | Distribution | `podcast_upload_media_asset`, `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, `podcast_post_to_x` |
 | Metrics | `podcast_metrics_collect`, `podcast_metrics_summary`, `podcast_episode_metrics`, `podcast_metrics_report` |
@@ -154,7 +154,7 @@ Agents should read [`AGENTS.md`](./AGENTS.md) and then your `PLAYBOOK.md`.
 | Check the setup | `uv run python -m core.doctor` |
 | Rebuild feed (+ pages), no deploy | `uv run python -m core.site` |
 | Import a back catalog | `uv run python -m importers.rss <feed-url> --mirror` |
-| Back up | `uv run python scripts/backup_to_hf.py` |
+| Back up | `podcast_backup` tool (runs in the background), or `uv run python scripts/backup_to_hf.py` |
 | Collect metrics + write the dashboard | `uv run python -m metrics.collect --report` (schedule `bin/collect-metrics.sh` daily) |
 | Run tests | `uv run python -m unittest discover -s tests` |
 
@@ -174,9 +174,9 @@ The engine refuses to:
 
 | Symptom | Cause and fix |
 | :--- | :--- |
-| `git_deploy.status: skipped` | The site repo isn't on `WEBSITE_BRANCH`. Switch branches and run `deploy_site(...)` (see `AGENTS.md` §5). |
+| `git_deploy.status: skipped` | The site repo isn't on `WEBSITE_BRANCH`. Switch branches and call `podcast_deploy_site` (see `AGENTS.md` §5). |
 | `git_deploy.status: failed`, "could not read Username" | Git has no usable credentials. On headless Linux, keyring helpers (libsecret) can't unlock; use `credential.helper store` or a fine-grained token. |
-| Rewritten show notes don't reach podcast apps | Update `content_markdown` (a trigger clears stale imported HTML), then rebuild and deploy. |
+| Rewritten show notes don't reach podcast apps | Edit them with `podcast_update_episode` (it clears stale imported HTML and rebuilds), then `podcast_deploy_site`. |
 | Backup re-downloads audio every run | Catalog byte lengths don't match R2; sizes must come from the stored object (the importer's `--mirror` records them). |
 | `core.doctor`: domain resolves publicly but not locally | Your resolver cached an old "no such host" answer; it clears on its own. |
 | Doctor says a metrics source is ready, but collection fails | The doctor checks settings, not live access. The run's message says what to fix, e.g. Cloudflare `does not have permission ... zone.analytics.read` (add a token policy scoped to the zone/domain with Analytics Read) or YouTube `API has not been used in project ...` (enable YouTube Analytics API in that Cloud project). |
@@ -189,7 +189,7 @@ The engine refuses to:
 ```
 podcast_server/
 ├── core/                  # config, catalog (db), R2 storage, feed XML, site output + deploy, doctor, thumbnail renderer, helpers
-├── mcp_server/server.py   # the 19 MCP tools
+├── mcp_server/server.py   # the MCP tools, their annotations, and the connection instructions
 ├── importers/             # rss.py (any host, GUID-preserving), descript.py (staging)
 ├── exporters/             # Astro pages, blog posts, social drafts, X posting, YouTube upload + thumbnails
 ├── metrics/               # collectors (OP3, Cloudflare, X, YouTube, plugins), store, analysis, dashboard

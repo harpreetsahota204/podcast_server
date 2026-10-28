@@ -7,6 +7,11 @@ from core.config import settings
 from core.formatting import one_line, validate_slug, yaml_str
 
 
+def blog_post_path(slug: str) -> Path:
+    """Where the blog post for `slug` lives in the website repo (raises ValueError for an unsafe slug)."""
+    return settings.site_blog_dir / f"{validate_slug(slug)}.md"
+
+
 def create_blog_post(
     title: str,
     description: str,
@@ -19,9 +24,8 @@ def create_blog_post(
 
     Overwrites an existing file with the same slug. Returns the written path.
     """
-    validate_slug(slug)
-    settings.site_blog_dir.mkdir(parents=True, exist_ok=True)
-    output_path = settings.site_blog_dir / f"{slug}.md"
+    output_path = blog_post_path(slug)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     frontmatter = [
         f"title: {yaml_str(title)}",

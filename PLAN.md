@@ -96,7 +96,8 @@ CREATE TABLE collection_runs (id, source, started_at, finished_at, status, windo
 | Capability | State |
 | :--- | :--- |
 | Storage, catalog, feed (RSS 2.0 + iTunes + Podcasting 2.0) | Done |
-| MCP server (19 tools) with human review gate | Done |
+| MCP server with human review gate, tool annotations, and connection instructions | Done |
+| Episode edits, deploys, and background backups as MCP tools (no shell needed for routine work) | Done |
 | Site modes `none` / `astro`, scoped deploy | Done |
 | GUID-preserving RSS import + audio mirroring | Done |
 | Setup doctor, HF backups, exclusion list | Done |

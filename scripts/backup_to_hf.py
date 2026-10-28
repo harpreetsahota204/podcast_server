@@ -9,7 +9,8 @@ Layout of the staging folder `DATA_DIR/backup/` (mirrored 1:1 into the dataset):
 
 Safe to re-run: unchanged audio is skipped locally, and the Hub deduplicates
 uploads so only new or changed data is sent. Requires `hf auth login` and
-HF_BACKUP_REPO in .env.
+HF_BACKUP_REPO in .env. Only one run at a time: agents start it in the
+background with the `podcast_backup` MCP tool (see core/backup.py).
 
 Usage:
     uv run python scripts/backup_to_hf.py [--steps sync upload] [--repo-id user/name]
@@ -22,6 +23,7 @@ import sqlite3
 
 from huggingface_hub import HfApi
 
+from core.backup import COMPLETE_MARKER, backup_lock
 from core.config import settings
 from core.db import CatalogDB
 from core.storage import R2StorageClient
@@ -113,7 +115,7 @@ def upload_to_hub(repo_id: str) -> None:
             ignore_patterns=["*.part", "*.tmp", "*.mp3.*"],  # *.mp3.<hex> = boto3 temp files from interrupted downloads
         )
         logger.info("Uploaded %s/", folder)
-    logger.info("Backup complete: https://huggingface.co/datasets/%s", repo_id)
+    logger.info("%s: https://huggingface.co/datasets/%s", COMPLETE_MARKER, repo_id)
 
 
 def main() -> None:
@@ -124,10 +126,12 @@ def main() -> None:
     args = parser.parse_args()
     if "upload" in args.steps and not args.repo_id:
         parser.error("set HF_BACKUP_REPO in .env or pass --repo-id")
-    if "sync" in args.steps:
-        sync_local_backup()
-    if "upload" in args.steps:
-        upload_to_hub(args.repo_id)
+    # One run at a time, whether started by hand or by the podcast_backup MCP tool.
+    with backup_lock():
+        if "sync" in args.steps:
+            sync_local_backup()
+        if "upload" in args.steps:
+            upload_to_hub(args.repo_id)
 
 
 if __name__ == "__main__":

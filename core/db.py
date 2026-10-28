@@ -16,6 +16,10 @@ from core.config import settings
 class CatalogDB:
     """Thin wrapper over one SQLite connection; use as a context manager so it always closes."""
 
+    # Editorial columns that may change after release. guid and slug are absent because podcast
+    # apps key listening state on them; audio columns are absent because published R2 objects are immutable.
+    EDITABLE_FIELDS = frozenset({"title", "summary", "content_markdown", "tags", "episode_number", "season", "explicit"})
+
     def __init__(self, db_path: Path, excluded_file: Path | None = None) -> None:
         """Open (creating if needed) the catalog at `db_path`, ensure the schema, and load exclusions.
 
@@ -146,6 +150,25 @@ class CatalogDB:
     def insert_episode_if_new(self, episode: dict[str, Any]) -> bool:
         """Insert an episode unless one with the same id, slug, or guid exists; never overwrites."""
         return self._insert(episode, on_conflict="ON CONFLICT DO NOTHING")
+
+    def update_episode(self, slug: str, changes: dict[str, Any]) -> bool:
+        """Apply `changes` to the episode with this slug; return False if no such episode exists.
+
+        Raises ValueError for an empty change set or any column outside EDITABLE_FIELDS, so this
+        path can never rewrite a GUID, slug, or audio reference. Column names are checked against
+        that allowlist before being interpolated; values are always bound.
+        """
+        if not changes:
+            raise ValueError("No changes given.")
+        if forbidden := set(changes) - self.EDITABLE_FIELDS:
+            raise ValueError(f"Not editable: {', '.join(sorted(forbidden))}.")
+        assignments = ", ".join(f"{column} = ?" for column in changes)
+        with self.conn:
+            cursor = self.conn.execute(
+                f"UPDATE episodes SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE slug = ?",
+                [*changes.values(), slug],
+            )
+        return cursor.rowcount == 1
 
     def get_episode_by_slug(self, slug: str) -> dict[str, Any] | None:
         """Return the episode with this slug, or None."""
