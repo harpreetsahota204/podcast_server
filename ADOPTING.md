@@ -132,6 +132,25 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
 5. **Redirect the old feed** in the old host's dashboard: a 301 redirect to your new `PODCAST_FEED_URL` (some hosts also add `<itunes:new-feed-url>`). Apple and Spotify follow it; you don't need to resubmit.
 6. **Wait 2–4 weeks** before cancelling, so every app has picked up the redirect. Back up first (below).
 
+## Optional Integrations
+
+**YouTube uploads** (`podcast_publish_to_youtube`):
+1. In Google Cloud Console, create a project, enable **YouTube Data API v3**, and create an **OAuth client ID** of type *Desktop app*. Download it as `client_secret.json`.
+2. Authorize once (opens a browser) to produce the token file the engine reads:
+
+   ```bash
+   uv run --with google-auth-oauthlib python -c "
+   from google_auth_oauthlib.flow import InstalledAppFlow
+   flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', ['https://www.googleapis.com/auth/youtube.upload'])
+   open('youtube_token.json', 'w').write(flow.run_local_server(port=0).to_json())"
+   ```
+
+3. Move `youtube_token.json` somewhere private, `chmod 600` it, and set `YOUTUBE_TOKEN_PATH` in `.env`. Uploads default to `unlisted`.
+
+**Descript staging** (`podcast_stage_from_descript`): the tool takes the episode's transcript exported from Descript as Markdown (markers such as `[00:12:30] Chapter title` or timestamped headings become chapters), plus either the published audio's download URL or a local MP3 path. Set `DESCRIPT_API_BEARER` only if your download URLs require authentication; it's sent to `descript.com` hosts only.
+
+**Backups:** `hf auth login` once, set `HF_BACKUP_REPO` to a dataset id under your account (it's created private on first run), then run the backup after each publish (below).
+
 ## Day-to-Day
 
 | Task | How |
