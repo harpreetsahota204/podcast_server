@@ -664,7 +664,7 @@ class DevtoTests(unittest.TestCase):
         article = json.loads(data)["article"]
         self.assertEqual((url, headers["api-key"]), ("https://dev.to/api/articles", "test-key"))
         self.assertEqual((article["published"], article["canonical_url"]), (False, self.CANONICAL))
-        self.assertEqual((article["title"], article["tags"]), ("Episode One Notes", "robotics, ai"))
+        self.assertEqual((article["title"], article["tags"]), ("Episode One Notes", ["robotics", "ai"]))
         self.assertTrue(article["body_markdown"].startswith("See [the last post](https://example.com/blog/older/)"))
         self.assertEqual((result["status"], result["article_id"]), ("draft_created", 7))
         logged = json.loads(settings.devto_post_log_path.read_text())

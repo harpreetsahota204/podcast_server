@@ -108,7 +108,8 @@ def crosspost_to_devto(slug: str, tags: list[str] | None = None, dry_run: bool =
         "title": source.title,
         "description": source.description,
         "body_markdown": source.body_markdown,
-        "tags": ", ".join(article_tags),
+        # A JSON list: dev.to silently drops tags sent as the comma-separated string its docs describe.
+        "tags": article_tags,
         "canonical_url": source.canonical_url,
         "published": False,
     }
