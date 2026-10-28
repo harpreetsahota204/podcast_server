@@ -55,7 +55,7 @@ flowchart LR
 | X developer app + [xurl](https://github.com/xdevplatform/xurl) | `podcast_post_to_x` and X metrics for those posts | An app in the [X developer portal](https://developer.x.com) (read and write, OAuth 2.0); X bills API use. Steps in ADOPTING. |
 | YouTube Data + Analytics APIs | `podcast_publish_to_youtube`, and YouTube metrics for the show's videos | A Google Cloud OAuth client ([Data API](https://developers.google.com/youtube/v3), [Analytics API](https://developers.google.com/youtube/analytics)). |
 | [OP3](https://op3.dev) | Free, open download analytics (stats are public) | `USE_OP3_PREFIX=true` and a free API key. |
-| Cloudflare analytics token | Audio-traffic metrics from the edge | A token with Zone → Analytics → Read (listed as Domain → Analytics → Read in newer dashboards). |
+| Cloudflare analytics token | Audio-traffic metrics from the edge | A token with Analytics Read on the zone (newer dashboards: a policy scoped to the *Domain*). |
 | Hugging Face account | Private, incremental backups of audio and catalog | A private dataset; Hugging Face also offers an [MCP server](https://huggingface.co/settings/mcp). |
 
 [`ADOPTING.md`](./ADOPTING.md) walks through each step in order with the exact settings.

@@ -125,6 +125,7 @@ def upload_video_to_youtube(
     }
 
     # The video is already live here, so a log failure is reported, never raised (a retry would upload twice).
-    if log_error := append_record(settings.youtube_upload_log_path, {"uploaded_at": datetime.now(UTC).isoformat(), **result}):
+    record = {"uploaded_at": datetime.now(UTC).isoformat(), **result}
+    if log_error := append_record(settings.youtube_upload_log_path, record):
         result["log_error"] = log_error
     return result

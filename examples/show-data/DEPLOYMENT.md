@@ -97,7 +97,7 @@ How to restore: <short steps>
 | YouTube OAuth | <YOUTUBE_TOKEN_PATH> | |
 | Descript | `.env` | |
 | OP3 API token | `.env` | <read-only API key> |
-| Cloudflare analytics token | `.env` | <Zone > Analytics > Read, one zone> |
+| Cloudflare analytics token | `.env` | <Analytics Read in a policy scoped to one zone/domain> |
 | X (posting + metrics) | <xurl auth file> | <app name; scopes> |
 | Agent(s) operating the show | <agent name, where its MCP config and briefing live> | |
 

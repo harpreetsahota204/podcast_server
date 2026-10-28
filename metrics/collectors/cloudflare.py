@@ -38,6 +38,10 @@ SUCCESS_STATUSES = [200, 206]
 SECONDS_PER_DAY = 86400
 # The dataset's per-query row cap; a window that hits it would be silently truncated.
 ROW_LIMIT = 10000
+# Zone permissions only appear in a token policy scoped to the zone, which newer dashboards call a "domain".
+PERMISSION_HINT = (
+    " Edit the token: add a policy scoped to this zone (a 'Domain' in newer dashboards) with Analytics Read."
+)
 
 LIMITS_QUERY = """
 query Limits($zone: string!) {
@@ -196,7 +200,7 @@ class CloudflareCollector(Collector):
         )
         if reply.get("errors"):
             messages = "; ".join(e.get("message", "?") for e in reply["errors"])
-            hint = " Edit the token: add Zone > Analytics > Read (shown as Domain > Analytics > Read in newer dashboards) for this zone." if "does not have permission" in messages else ""
+            hint = PERMISSION_HINT if "does not have permission" in messages else ""
             raise CollectorError(f"Cloudflare GraphQL error: {messages}{hint}")
         zones = (reply.get("data") or {}).get("viewer", {}).get("zones") or []
         if not zones:

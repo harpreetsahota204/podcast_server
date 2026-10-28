@@ -578,8 +578,7 @@ class YouTubeTests(TempDirTestCase):
         analytics.reports.return_value.query.return_value.execute.side_effect = CollectorError("HTTP 403 disabled")
         collector = YouTubeCollector()
         youtube = self.youtube_mock([self.video("v1", viewCount="7")])
-        with mock.patch.object(collector, "services", return_value=(youtube, analytics)), \
-                mock.patch("metrics.collectors.youtube._execute", side_effect=lambda req, what: req.execute(num_retries=3)):
+        with mock.patch.object(collector, "services", return_value=(youtube, analytics)):
             result = collector.collect(make_ctx())
         self.assertIn("daily analytics skipped", result.notes[-1])
         self.assertIsNone(result.replace_start)

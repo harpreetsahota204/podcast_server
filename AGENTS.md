@@ -19,6 +19,7 @@ Never copy playbook content, show data, or show-specific values into this reposi
 5. **MCP server:** `bin/run-mcp.sh` (stdio).
 6. **Health check:** `uv run python -m core.doctor`.
 7. **Tests:** `uv run python -m unittest discover -s tests` (uses a fake show; never touches real data).
+8. **Commits:** stage files by path, not `git add -A`. CLIs run from the checkout can leave caches with account details (e.g. the Cloudflare CLI's `.cloudflare/`, which `.gitignore` already excludes).
 
 ## 3. MCP Tools
 
