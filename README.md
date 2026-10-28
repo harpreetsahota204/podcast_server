@@ -1,8 +1,186 @@
+<div align="center">
+
 # podcast_server
 
-A self-hosted podcast publishing engine that AI agents operate through MCP (Model Context Protocol) tools instead of a web dashboard. Audio lives in your own Cloudflare R2 bucket, the catalog is a SQLite file you can inspect, and the RSS feed is served from your own domain. An agent does the publishing steps; a human approves each episode before it goes live.
+**A self-hosted podcast host with no dashboard.**<br>
+Your AI agent is the interface. You're the approver.
+
+[![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue)](./LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](./pyproject.toml)
+[![MCP native](https://img.shields.io/badge/MCP-native-6E56CF)](https://modelcontextprotocol.io)
+[![Built with FastMCP](https://img.shields.io/badge/built%20with-FastMCP-0A7B83)](https://gofastmcp.com)
+[![uv](https://img.shields.io/badge/uv-managed-DE5FE9?logo=uv&logoColor=white)](https://docs.astral.sh/uv/)
+[![Ruff](https://img.shields.io/badge/lint-ruff-D7FF64?logo=ruff&logoColor=black)](https://docs.astral.sh/ruff/)
+[![Cloudflare R2](https://img.shields.io/badge/storage-Cloudflare%20R2-F38020?logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/r2/)
+[![Podcasting 2.0](https://img.shields.io/badge/feed-Podcasting%202.0-E04E39)](https://podcastindex.org/namespace/1.0)
+
+[![X](https://img.shields.io/badge/X-follow-000000?logo=x&logoColor=white)](https://x.com/DataScienceHarp)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-connect-0A66C2)](https://www.linkedin.com/in/harpreetsahota204)
+[![YouTube](https://img.shields.io/badge/YouTube-subscribe-FF0000?logo=youtube&logoColor=white)](https://www.youtube.com/@datascienceharp)
+[![Website](https://img.shields.io/badge/website-visit-111111?logo=astro&logoColor=white)](https://employabledatascientist.com)
+
+[What it is](#what-it-is) · [How it works](#how-it-works) · [Quick start](#quick-start) · [MCP tools](#mcp-tools) · [Adopting guide](./ADOPTING.md) · [Agent guide](./AGENTS.md)
+
+</div>
+
+---
+
+## What it is
+
+Podcast hosts charge a monthly fee for three things: storage for the audio, a database of episodes, and an RSS feed, all behind a web dashboard. `podcast_server` keeps those three on infrastructure you own and replaces the dashboard with [MCP](https://modelcontextprotocol.io) tools. The "user interface" is whichever AI agent you already use: Claude, Cursor, Codex, or your own.
+
+You talk to your agent: *"The interview with Ada is ready in Descript. Prep it."* The agent stages the episode, drafts titles and show notes in your show's voice, and stops. You approve. The agent publishes, uploads the video, sets the thumbnail, posts the announcement, and tells you a week later how it's doing.
+
+```mermaid
+flowchart LR
+    subgraph hosted["A hosting service"]
+        direction TB
+        Y1([You]) -->|click through| D[Their web dashboard]
+        D --> S1[(Their storage)]
+        D --> C1[(Their database)]
+        D --> F1[Their feed URL]
+    end
+    subgraph self["podcast_server"]
+        direction TB
+        Y2([You]) <-->|chat and approve| A[Your AI agent]
+        A -->|MCP tools| E[podcast_server]
+        E --> S2[(Your R2 bucket)]
+        E --> C2[(Your SQLite catalog)]
+        E --> F2[Feed on your domain]
+    end
+    hosted ~~~ self
+```
+
+**How to place it:**
+
+| Question | Answer |
+| :--- | :--- |
+| What job does it do? | Podcast hosting and publishing: storage, feed, catalog, distribution, and analytics |
+| Where does it run? | On your machine, against services you own: Cloudflare R2, your domain, and optionally a git-deployed website |
+| How do you operate it? | Through an AI agent over MCP. There is no web UI. |
+| Who decides? | You. The agent drafts and executes; nothing public happens without your approval. |
+| Closest category | A **headless podcast host**: like a headless CMS, where the missing "head" is an agent |
+
+**What it isn't:**
+
+- **Not an editor.** Edit in Descript, or anything that exports an MP3. The engine takes it from there.
+- **Not an AI that makes your show.** The engine has no taste, on purpose. Your playbook holds the voice and standards, the agent applies them, and you approve.
+- **Not a hosted service.** Nobody runs it for you, and there's no account to sign up for.
+- **Not a wrapper around someone else's product.** It *is* the system of record: the catalog, the episode GUIDs, the published audio, and the log of every public action live here.
 
 **New here? Start with [`ADOPTING.md`](./ADOPTING.md)**, a step-by-step guide to running your own show, including migrating from another host without losing subscribers.
+
+---
+
+## How it works
+
+### Three layers, two people
+
+```mermaid
+flowchart TB
+    YOU([You: taste and approval]) <--> AGENT([Your AI agent: drafts and executes])
+    AGENT -->|reads first| SHOW
+    AGENT -->|calls| SURFACE
+
+    subgraph SHOW["Show layer: your private DATA_DIR"]
+        PB[PLAYBOOK.md: voice, title rules, workflows]
+        TPL[templates: social posts, thumbnail style]
+        CAT[(catalog.db and logs of every public action)]
+    end
+
+    subgraph SURFACE["Surface: the MCP server"]
+        TOOLS[typed tools with safety annotations]
+        RULES[operating rules sent on connect, AGENTS.md]
+    end
+
+    subgraph ENGINE["Engine: show-neutral Python"]
+        CORE[core: catalog, storage, feed, site, doctor]
+        IO[importers and exporters: RSS, Descript, YouTube, X]
+        MET[metrics: OP3, Cloudflare, X, YouTube]
+    end
+
+    subgraph OWNED["Services you own"]
+        R2[(Cloudflare R2 on your domain)]
+        WEB[your website repo]
+        PLAT[YouTube and X accounts]
+        HF[(private Hugging Face backup)]
+    end
+
+    SURFACE --> ENGINE
+    CORE --> CAT
+    CORE --> R2
+    CORE --> WEB
+    CORE --> HF
+    IO --> PLAT
+    MET --> PLAT
+```
+
+| Layer | Its job | Where it lives |
+| :--- | :--- | :--- |
+| **Engine** | The hands: does each job correctly and refuses unsafe ones | this repo: `core/`, `importers/`, `exporters/`, `metrics/` |
+| **Surface** | The controls: typed tools, safety annotations, operating rules | `mcp_server/server.py`, [`AGENTS.md`](./AGENTS.md) |
+| **Show** | The taste and the memory: voice, templates, catalog, logs | your private `DATA_DIR` (template: [`examples/show-data/`](./examples/show-data/)) |
+
+The engine and surface know nothing about any particular show. That's why this repo can be public while your show data stays private, and why one checkout can run several shows (one `.env` each).
+
+### A release, end to end
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant Agent as Your AI agent
+    participant MCP as podcast_server
+    participant Svc as Your services
+    You->>Agent: The episode with Ada is ready in Descript
+    Agent->>MCP: podcast_stage_from_descript
+    MCP->>Svc: download the master audio
+    MCP-->>Agent: measured audio, chapters, draft show notes
+    Agent->>Agent: titles and notes in the playbook's voice
+    Agent-->>You: review package
+    You->>Agent: approved, with edits
+    Agent->>MCP: podcast_publish
+    MCP->>MCP: check slug, GUID, exclusions, and audio before any upload
+    MCP->>Svc: upload to R2, rebuild feed and pages, deploy
+    MCP-->>Agent: live URLs and deploy status
+    Agent->>MCP: podcast_backup
+    Agent-->>You: published, with links
+```
+
+### After release: promote and measure
+
+Every public action is logged, and metrics only count what the engine itself put out, so numbers are never mixed with the rest of your accounts:
+
+```mermaid
+flowchart LR
+    P[published episode] --> V[YouTube upload and thumbnail]
+    P --> X[X post]
+    V --> L[(logs in DATA_DIR/social)]
+    X --> L
+    L --> C[daily collectors: OP3, Cloudflare, X, YouTube]
+    C --> M[(metrics.db)]
+    M --> D[offline dashboard and metrics tools]
+    D -->|"how is the show doing?"| AG([your agent])
+```
+
+### Safety lives in the engine, not the prompt
+
+An agent can misread a prompt; it can't get past code. The rules that matter are enforced by the engine itself: a database trigger blocks excluded episodes, publishing checks everything before the first upload, uploads never overwrite, and every public action is logged so a retry can't double-post. On top of that, every tool carries [MCP annotations](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#tool-annotations), so your client can run reads freely and ask you before anything public:
+
+| Level | What your client can do | Tools |
+| :--- | :--- | :--- |
+| Read-only | run without asking | `podcast_status`, `podcast_inspect`, `podcast_list_episodes`, `podcast_get_episode`, `podcast_draft_social`, `podcast_metrics_summary`, `podcast_episode_metrics` |
+| Local files | run without asking | `podcast_stage_thumbnail`, `podcast_render_thumbnail`, `podcast_metrics_report`, `podcast_create_blog` |
+| Outside services, additive | run, safe to retry | `podcast_stage_from_descript`, `podcast_rebuild_feed`, `podcast_upload_media_asset`, `podcast_metrics_collect`, `podcast_backup` |
+| Public edit | ask you first; safe to retry | `podcast_update_episode`, `podcast_deploy_site`, `podcast_set_youtube_thumbnail` |
+| Public release | ask you first; never repeat blindly | `podcast_publish`, `podcast_publish_to_youtube`, `podcast_post_to_x` |
+
+### Design principles
+
+1. **You own the infrastructure.** Audio sits in your bucket, the feed on your domain, the catalog in a file you can open. Leaving means copying files, not exporting from someone's dashboard.
+2. **The agent operates; you approve.** Nothing goes public without your explicit approval of the exact content.
+3. **Guarantees live in code.** GUIDs are permanent, exclusions are enforced by the database, and checks run before side effects.
+4. **Everything is inspectable.** SQLite, Markdown, JSON, and append-only JSONL logs. No hidden state.
+5. **The engine is show-neutral.** Your voice, templates, and data live in your own `DATA_DIR`, never in this repo.
 
 ---
 
@@ -16,33 +194,6 @@ A self-hosted podcast publishing engine that AI agents operate through MCP (Mode
 - **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X and YouTube engagement for the show's own posts and videos, or your own) feed a local SQLite store, an offline HTML dashboard, and MCP tools agents can query.
 - **Safety:** see the list below; checks run before any upload.
 - **Backups:** incremental, to a private Hugging Face dataset.
-
-## How Publishing Works
-
-```mermaid
-flowchart LR
-    A[Descript export or local MP3] --> B[stage: download, measure, parse chapters]
-    B --> C{Human review}
-    C -->|approved| D[podcast_publish]
-    D --> E[R2 upload]
-    D --> F[catalog insert]
-    D --> G[feed + episode pages]
-    G --> H[deploy: R2 feed, or commit generated files + push]
-    H --> I[backup]
-```
-
-After release, promotion and measurement close the loop. Every public action is logged, and metrics only count what the engine itself put out:
-
-```mermaid
-flowchart LR
-    P[published episode] --> V[YouTube upload + thumbnail]
-    P --> X[X post]
-    V --> L[(logs in DATA_DIR/social)]
-    X --> L
-    L --> C[daily collectors: OP3, Cloudflare, X, YouTube]
-    C --> M[(metrics.db)]
-    M --> D[dashboard + podcast_metrics_* tools]
-```
 
 ---
 
@@ -206,3 +357,16 @@ podcast_server/
 ## License
 
 [Business Source License 1.1](./LICENSE): free for personal, open-source, and internal business use; not for offering a competing commercial hosted podcast service. Converts to Apache 2.0 on October 26, 2029.
+
+---
+
+<div align="center">
+
+Built by **Harpreet Sahota** to run a real show, then made show-neutral so you can run yours.
+
+[![X](https://img.shields.io/badge/X-follow-000000?logo=x&logoColor=white)](https://x.com/DataScienceHarp)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-connect-0A66C2)](https://www.linkedin.com/in/harpreetsahota204)
+[![YouTube](https://img.shields.io/badge/YouTube-subscribe-FF0000?logo=youtube&logoColor=white)](https://www.youtube.com/@datascienceharp)
+[![Website](https://img.shields.io/badge/website-visit-111111?logo=astro&logoColor=white)](https://employabledatascientist.com)
+
+</div>
