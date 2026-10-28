@@ -1,0 +1,11 @@
+# Copy to your private data repo. Binary and regenerable files stay out of git;
+# catalog.db and audio are covered by scripts/backup_to_hf.py.
+catalog.db
+catalog.db-*
+*.bak*
+backup/
+raw/
+thumbnails/
+dist/
+*.part
+*.tmp

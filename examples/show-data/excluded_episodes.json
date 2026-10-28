@@ -1,0 +1,6 @@
+{
+  "reason": "Episodes that must never be imported or published (e.g. bonus content left behind on an old host).",
+  "episodes": [
+    {"slug": "example-bonus-episode", "guid": "original-guid-from-old-feed", "title": "Example Bonus Episode"}
+  ]
+}

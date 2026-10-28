@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.part
+*.tmp
+.DS_Store
+
+# Show data and show-specific research live outside the engine (DATA_DIR); these are local symlinks.
+/data
+/intelligence

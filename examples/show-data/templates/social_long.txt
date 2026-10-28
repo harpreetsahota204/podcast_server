@@ -1,0 +1,7 @@
+{hook}
+
+in this episode:
+{specs}
+
+with {guest_name}:
+{link}

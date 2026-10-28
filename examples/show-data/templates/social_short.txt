@@ -1,0 +1,4 @@
+{hook}
+
+new episode with {guest_name}:
+{link}
