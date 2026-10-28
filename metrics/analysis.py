@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from core.config import settings
+from exporters.youtube import read_thumbnail_changes
 from metrics.episodes import EpisodeIndex
 from metrics.models import ACCOUNT, SHOW, MetricSpec
 from metrics.registry import metric_specs
@@ -228,6 +229,22 @@ def coverage(store: MetricsStore) -> list[dict[str, Any]]:
     return rows
 
 
+def events(episodes: EpisodeIndex, since: str) -> list[dict[str, Any]]:
+    """Things that can explain a change in the numbers, on or after `since`: releases and thumbnail changes."""
+    found = [
+        {"date": info.published_on, "kind": "release", "slug": info.slug, "label": info.title}
+        for info in episodes.episodes.values()
+    ]
+    for change in read_thumbnail_changes():
+        slug = change.get("episode_slug")
+        info = episodes.get(slug) if slug else None
+        found.append({
+            "date": change["changed_at"][:10], "kind": "thumbnail", "slug": slug,
+            "label": f"New thumbnail: {info.title if info else change['video_id']}",
+        })
+    return sorted((e for e in found if e["date"] >= since), key=lambda e: e["date"])
+
+
 def _today(today: date | None) -> date:
     """`today` or the current UTC date."""
     return today or datetime.now(UTC).date()
@@ -248,11 +265,7 @@ def build_dashboard_data(days: int = 90, today: date | None = None) -> dict[str,
             "charts": daily_charts(store, specs, days, today),
             "breakdowns": breakdowns(store, specs, days, today),
             "episodes": episode_table(store, specs, episodes),
-            "releases": [
-                {"date": i.published_on, "slug": i.slug, "title": i.title}
-                for i in episodes.episodes.values()
-                if i.published_on >= (today - timedelta(days=days - 1)).isoformat()
-            ],
+            "events": events(episodes, (today - timedelta(days=days - 1)).isoformat()),
             "items": items_table(store, specs),
             "coverage": coverage(store),
         }
@@ -303,5 +316,9 @@ def episode_metrics(slug: str) -> dict[str, Any]:
             for table in items_table(store, specs, limit=10_000)
             for row in table["rows"] if row["episode_slug"] == slug
         ]
+    thumbnail_changes = [
+        {"date": c["changed_at"][:10], "video_id": c["video_id"], "file": c.get("thumbnail_file")}
+        for c in read_thumbnail_changes() if c.get("episode_slug") == slug
+    ]
     return {"slug": slug, "title": info.title, "published_on": info.published_on, "series": series,
-            "linked_items": linked_items}
+            "linked_items": linked_items, "thumbnail_changes": thumbnail_changes}

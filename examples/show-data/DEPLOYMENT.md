@@ -48,6 +48,12 @@ Last verified: <YYYY-MM-DD>
 - Retention to watch: <e.g. Cloudflare free plan keeps ~30 days, so a missed week of collection loses data>
 - Public stats page: <OP3 stats URL, if the prefix is on>
 
+## YouTube Thumbnails
+
+- Style file: `templates/thumbnail_style.json`; fonts: <files in templates/fonts/ and their licenses>
+- Art prompt style (`THUMBNAIL_STYLE`): <value>
+- Change log: `social/youtube_thumbnails.jsonl` (pinned on the metrics dashboard)
+
 ## Audio Hosting (Cloudflare R2)
 
 - Bucket: <name>; episodes at `episodes/<slug>.mp3`; media at `media/`

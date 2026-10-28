@@ -55,9 +55,10 @@ Never publish without explicit approval.
 
 ## 7. Distribution
 
-- **Social:** <platforms; templates live in templates/social_long.txt and social_short.txt>
-- **Video:** <YouTube privacy default, description format, chapters>
-- **Thumbnails:** <visual style; also set THUMBNAIL_STYLE in .env>
+- **Social:** <platforms; templates live in templates/social_long.txt and social_short.txt; always pass episode_slug to podcast_post_to_x>
+- **Video:** <YouTube privacy default, description format, chapters; always pass episode_slug to podcast_publish_to_youtube>
+- **Thumbnails:** <art style (also THUMBNAIL_STYLE in .env), headline rules (word count, tone), label format>. Fonts, colors, and layout go in templates/thumbnail_style.json. Flow: podcast_stage_thumbnail → agent renders art → podcast_render_thumbnail → approval → podcast_set_youtube_thumbnail.
+- **Metrics:** <which numbers matter for this show, review cadence (e.g. 7 days after each release)>; agents read them with podcast_metrics_summary / podcast_episode_metrics.
 
 ## 8. Deployment
 

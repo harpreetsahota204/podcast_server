@@ -19,11 +19,11 @@ from core.formatting import op3_url, slugify, validate_slug
 from core.media_uploader import upload_blog_media
 from core.site import deploy_site, rebuild_site
 from core.storage import R2StorageClient
-from core.thumbnail import generate_youtube_thumbnail
+from core.thumbnail import generate_youtube_thumbnail, render_thumbnail
 from exporters.blog_post import create_blog_post
 from exporters.social import draft_social_package
 from exporters.x_post import post_to_x
-from exporters.youtube import PrivacyStatus, upload_video_to_youtube
+from exporters.youtube import PrivacyStatus, set_video_thumbnail, upload_video_to_youtube
 from importers.descript import (
     download_audio_from_url,
     extract_chapters_from_markers_or_transcript,
@@ -355,8 +355,27 @@ def podcast_stage_thumbnail(
     output_filename: str,
     style: str | None = None,
 ) -> dict[str, Any]:
-    """Builds a 16:9 YouTube thumbnail prompt and returns the local path and R2 key the rendered image should use. Does not generate the image."""
+    """Step 1 of a thumbnail: builds a 16:9 art prompt (no lettering, empty right side) and returns where to save the rendered art. Does not generate the image; render it with your image model, then call podcast_render_thumbnail."""
     return generate_youtube_thumbnail(prompt_text=prompt_text, output_filename=output_filename, style=style)
+
+
+@mcp.tool()
+def podcast_render_thumbnail(
+    base_image_path: str,
+    headline_lines: list[str],
+    slug: str,
+    label: str | None = None,
+    accent_line: int | None = -1,
+) -> dict[str, Any]:
+    """Step 2 of a thumbnail: composites 1-4 headline lines (2-3 short words read best; don't repeat the title) and an optional small label onto the art, in the show's style ($DATA_DIR/templates/thumbnail_style.json). accent_line picks the highlighted line (default last; null for none). Writes DATA_DIR/thumbnails/<slug>-final.png (JPEG if over 2 MB). Show the result to the human before setting it."""
+    output = settings.thumbnails_dir / f"{validate_slug(slug)}-final.png"
+    return render_thumbnail(Path(base_image_path), headline_lines, output, label=label, accent_line=accent_line)
+
+
+@mcp.tool()
+def podcast_set_youtube_thumbnail(video_id: str, thumbnail_path: str, episode_slug: str | None = None) -> dict[str, Any]:
+    """Sets a video's custom thumbnail on YouTube (public; only after the human approved the exact image). JPEG/PNG up to 2 MB. Logs the change so the metrics dashboard marks it; episode_slug defaults to the video's tracked episode."""
+    return set_video_thumbnail(video_id=video_id, thumbnail_path=thumbnail_path, episode_slug=episode_slug)
 
 
 @mcp.tool()

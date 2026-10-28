@@ -197,11 +197,13 @@ To add a source (YouTube, a hosting platform's CSV export, a newsletter), subcla
 | Rebuild the feed (and pages) | `podcast_rebuild_feed` tool, or `uv run python -m core.site` |
 | Back up | Set `HF_BACKUP_REPO`, run `hf auth login` once, then `uv run python scripts/backup_to_hf.py` after each publish. It mirrors every MP3, a catalog snapshot, and your show assets to a **private** Hugging Face dataset, uploading only what changed. |
 | Re-check setup | `uv run python -m core.doctor` |
+| Make a YouTube thumbnail | Agent: `podcast_stage_thumbnail` → renders the art → `podcast_render_thumbnail` → your approval → `podcast_set_youtube_thumbnail` |
 | Check audience numbers | Agent: `podcast_metrics_summary`; or open `$DATA_DIR/metrics/dashboard.html` (refreshed by the daily `bin/collect-metrics.sh`) |
 
 ## Customizing
 
 - **Editorial voice and workflows:** `DATA_DIR/PLAYBOOK.md` (template in `examples/show-data/`). Agents follow it for titles, show notes, and review.
+- **YouTube thumbnails:** put `thumbnail_style.json` (and your font files) in `DATA_DIR/templates/` to set fonts, colors, the fade behind the text, and the text box; see `examples/show-data/templates/thumbnail_style.json`. Fonts must allow embedding (e.g. SIL Open Font License faces from Google Fonts). Without the file, a plain built-in font is used. Set `THUMBNAIL_STYLE` in `.env` for the art prompt's visual style. YouTube's custom thumbnails must be enabled on the channel (phone-verified accounts).
 - **Social posts:** put `social_long.txt` / `social_short.txt` in `DATA_DIR/templates/` using `{hook}`, `{specs}`, `{guest_name}`, `{link}`, `{title}` (double literal braces: `{{ }}`).
 - **Site layout (astro mode):** `WEBSITE_RSS_FILE`, `WEBSITE_EPISODES_DIR`, `WEBSITE_BLOG_DIR`, `WEBSITE_BRANCH`. Episode pages use this frontmatter; add a matching collection schema to your site:
 

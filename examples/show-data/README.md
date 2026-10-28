@@ -12,6 +12,7 @@ echo "DATA_DIR=$HOME/my-show-data" >> /path/to/podcast_server/.env
 | `PLAYBOOK.md` | Your editorial voice, title rules, review checklist, and workflows. Agents read it first. |
 | `DEPLOYMENT.md` | Your infrastructure record: DNS (including email records), R2, website wiring, backups, where credentials live, pending items. Fill it in as you set things up. |
 | `templates/social_*.txt` | Social post templates (`{hook}`, `{specs}`, `{guest_name}`, `{link}`, `{title}`) |
+| `templates/thumbnail_style.json` + `templates/fonts/` | YouTube thumbnail look: fonts, colors, fade, text box (template in this folder) |
 | `excluded_episodes.json` | Slugs/GUIDs that must never be (re)published. Delete the example entry. |
 | `transcripts/` | `<slug>.txt` transcripts |
 | `catalog.db` | Created on first run. Don't commit it; back it up with `scripts/backup_to_hf.py`. |

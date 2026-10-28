@@ -27,6 +27,8 @@ Podcast hosting services charge monthly for object storage, a database table, an
 | `core/feed_generator.py` | Pure RSS XML generation. |
 | `core/site.py` | Publishes the feed (R2 or website repo), syncs episode pages, scoped git deploy. |
 | `core/doctor.py` | End-to-end setup check. |
+| `core/thumbnail.py` | Thumbnail art prompts and the style-file headline renderer (Pillow). |
+| `core/jsonl.py` | Append-only logs of public actions (X posts, YouTube uploads, thumbnail changes). |
 | `importers/` | `rss.py` (any host, GUID-preserving), `descript.py` (staging, chapters). |
 | `exporters/` | Astro Markdown pages, blog posts, social templates, X posting (via xurl), YouTube. |
 | `metrics/` | Audience metrics: `collectors/` (OP3, Cloudflare, X, YouTube; plugins via `METRICS_EXTRA_COLLECTORS`), `store.py` (`metrics.db`), `analysis.py`, `report.py` (offline HTML dashboard), `collect.py` (CLI + scheduler entry). |
@@ -94,11 +96,12 @@ CREATE TABLE collection_runs (id, source, started_at, finished_at, status, windo
 | Capability | State |
 | :--- | :--- |
 | Storage, catalog, feed (RSS 2.0 + iTunes + Podcasting 2.0) | Done |
-| MCP server (17 tools) with human review gate | Done |
+| MCP server (19 tools) with human review gate | Done |
 | Site modes `none` / `astro`, scoped deploy | Done |
 | GUID-preserving RSS import + audio mirroring | Done |
 | Setup doctor, HF backups, exclusion list | Done |
 | Audience metrics: OP3 / Cloudflare / X / YouTube collectors, plugin contract, dashboard, MCP tools | Done |
+| YouTube thumbnails: prompt staging, style-file renderer, setter with change log + dashboard markers | Done |
 | Metrics: Apple/Spotify CSV import collectors | Planned |
 | Transcription, vector index, semantic search | Planned |
 

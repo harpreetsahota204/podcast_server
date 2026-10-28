@@ -64,7 +64,10 @@
   .wave-axis span.end { transform: translateX(-100%); }
   svg.wave .pin { stroke: var(--vu); stroke-width: 1.5; }
   svg.wave .pin-head { fill: var(--vu); }
+  svg.wave .pin-thumbnail .pin { stroke: #ffffff; stroke-dasharray: 3 3; }
+  svg.wave .pin-thumbnail .pin-head { fill: #ffffff; }
   .legend { font: 12px var(--mono); color: #8e9b95; margin: 6px 0 0; }
+  .legend .dot.dot-thumbnail { background: #ffffff; margin-left: 14px; }
   .legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--vu);
                  margin-right: 6px; vertical-align: middle; }
 
@@ -127,7 +130,7 @@
     </div>
     <svg class="wave" id="wave" viewBox="0 0 1000 240" preserveAspectRatio="none" role="img"></svg>
     <div class="wave-axis" id="wave-axis" aria-hidden="true"></div>
-    <p class="legend"><span class="dot"></span>Episode release (hover for the title)</p>
+    <p class="legend"><span class="dot"></span>Episode release <span class="dot dot-thumbnail"></span>New YouTube thumbnail (hover a pin for details)</p>
   </section>
 
   <div id="more-charts-section">
@@ -246,14 +249,14 @@ function renderWave(chart) {
     svg.append(bar);
   });
 
-  // Releases: an amber pin above the day an episode came out.
-  for (const r of DATA.releases) {
-    if (!index.has(r.date)) continue;
-    const x = index.get(r.date) * step + step / 2;
-    const pin = el("svg:g");
+  // Events: a pin above the day something happened (amber: release, white: new thumbnail).
+  for (const e of DATA.events) {
+    if (!index.has(e.date)) continue;
+    const x = index.get(e.date) * step + step / 2;
+    const pin = el("svg:g", { class: `pin-${e.kind}` });
     pin.append(el("svg:line", { class: "pin", x1: x, x2: x, y1: 6, y2: mid - 2 }));
     pin.append(el("svg:circle", { class: "pin-head", cx: x, cy: 8, r: 4 }));
-    pin.append(el("svg:title", {}, `${shortDate(r.date)} · ${r.title}`));
+    pin.append(el("svg:title", {}, `${shortDate(e.date)} · ${e.label}`));
     svg.append(pin);
   }
 

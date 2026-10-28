@@ -1,0 +1,14 @@
+{
+  "headline_font": "fonts/YourDisplayFont.ttf",
+  "label_font": "fonts/YourLabelFont.ttf",
+  "text_color": "#FFFFFF",
+  "accent_color": "#FFCC00",
+  "stroke_color": "#000000",
+  "stroke_ratio": 0.05,
+  "scrim_color": "#000000",
+  "scrim_opacity": 0.8,
+  "text_box": [0.57, 0.14, 0.95, 0.78],
+  "line_spacing": 0.04,
+  "label_ratio": 0.2,
+  "uppercase": true
+}

@@ -11,7 +11,8 @@ A self-hosted podcast publishing engine that AI agents operate through MCP (Mode
 - **Feed:** RSS 2.0 + iTunes + Podcasting 2.0 (`<podcast:locked>`, `<podcast:guid>`), exact enclosure byte lengths, Markdown show notes rendered to `content:encoded`, optional OP3 analytics.
 - **Two site modes:** `none` serves the feed from your R2 domain, with no website needed. `astro` writes one Markdown page per episode into your site repo and pushes only those files.
 - **Migration:** a GUID-preserving importer for any host's RSS feed, with audio mirrored into R2.
-- **Agent surface:** 17 MCP tools covering staging (including Descript), publishing, blog posts, social drafts and X posts, media uploads, YouTube, and audience metrics.
+- **Agent surface:** 19 MCP tools covering staging (including Descript), publishing, blog posts, social drafts and X posts, media uploads, YouTube uploads and thumbnails, and audience metrics.
+- **YouTube thumbnails:** your agent renders the art; the engine sets the headline in your show's fonts and colors (auto-fitted, clear of the duration badge, under 2 MB) and pushes it to YouTube after approval.
 - **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X and YouTube engagement for the show's own posts and videos, or your own) feed a local SQLite store, an offline HTML dashboard, and MCP tools agents can query.
 - **Safety:** see the list below; checks run before any upload.
 - **Backups:** incremental, to a private Hugging Face dataset.
@@ -28,6 +29,19 @@ flowchart LR
     D --> G[feed + episode pages]
     G --> H[deploy: R2 feed, or commit generated files + push]
     H --> I[backup]
+```
+
+After release, promotion and measurement close the loop. Every public action is logged, and metrics only count what the engine itself put out:
+
+```mermaid
+flowchart LR
+    P[published episode] --> V[YouTube upload + thumbnail]
+    P --> X[X post]
+    V --> L[(logs in DATA_DIR/social)]
+    X --> L
+    L --> C[daily collectors: OP3, Cloudflare, X, YouTube]
+    C --> M[(metrics.db)]
+    M --> D[dashboard + podcast_metrics_* tools]
 ```
 
 ---
@@ -53,7 +67,8 @@ flowchart LR
 | :--- | :--- | :--- |
 | [Descript](https://www.descript.com) | Staging episodes straight from a Descript export (chapters from markers) | Export the transcript as Markdown; see ADOPTING. |
 | X developer app + [xurl](https://github.com/xdevplatform/xurl) | `podcast_post_to_x` and X metrics for those posts | An app in the [X developer portal](https://developer.x.com) (read and write, OAuth 2.0); X bills API use. Steps in ADOPTING. |
-| YouTube Data + Analytics APIs | `podcast_publish_to_youtube`, and YouTube metrics for the show's videos | A Google Cloud OAuth client ([Data API](https://developers.google.com/youtube/v3), [Analytics API](https://developers.google.com/youtube/analytics)). |
+| YouTube Data + Analytics APIs | `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, and YouTube metrics for the show's videos | A Google Cloud OAuth client ([Data API](https://developers.google.com/youtube/v3), [Analytics API](https://developers.google.com/youtube/analytics)). Custom thumbnails need a phone-verified channel. |
+| An image model your agent can call | Thumbnail art (the engine only sets the text) | Whatever your agent supports (e.g. via its own MCP or API tools); put fonts and colors in `DATA_DIR/templates/thumbnail_style.json`. |
 | [OP3](https://op3.dev) | Free, open download analytics (stats are public) | `USE_OP3_PREFIX=true` and a free API key. |
 | Cloudflare analytics token | Audio-traffic metrics from the edge | A token with Analytics Read on the zone (newer dashboards: a policy scoped to the *Domain*). |
 | Hugging Face account | Private, incremental backups of audio and catalog | A private dataset; Hugging Face also offers an [MCP server](https://huggingface.co/settings/mcp). |
@@ -97,7 +112,10 @@ Keep `DATA_DIR` outside this checkout, ideally in its own private repo. [`exampl
 my-show-data/
 ├── PLAYBOOK.md               # your editorial voice, title rules, workflows (agents read this first)
 ├── DEPLOYMENT.md             # your infrastructure record: DNS, R2, website, backups, credential locations
-├── templates/                # social_long.txt, social_short.txt
+├── templates/                # social_long.txt, social_short.txt, thumbnail_style.json, fonts/
+├── social/                   # logs: x_posts.jsonl, youtube_uploads.jsonl, youtube_thumbnails.jsonl
+├── youtube_videos.json       # optional: back-catalog videos → episodes, for YouTube metrics
+├── thumbnails/               # staged art and rendered thumbnails
 ├── excluded_episodes.json    # episodes that must never be (re)published
 ├── transcripts/              # <slug>.txt
 ├── catalog.db                # created on first run; don't commit it (back it up instead)
@@ -125,8 +143,8 @@ Agents should read [`AGENTS.md`](./AGENTS.md) and then your `PLAYBOOK.md`.
 | :--- | :--- |
 | Catalog | `podcast_status`, `podcast_list_episodes`, `podcast_get_episode`, `podcast_inspect` |
 | Publishing | `podcast_stage_from_descript`, `podcast_publish`, `podcast_rebuild_feed` |
-| Content | `podcast_create_blog`, `podcast_draft_social`, `podcast_stage_thumbnail` |
-| Distribution | `podcast_upload_media_asset`, `podcast_publish_to_youtube`, `podcast_post_to_x` |
+| Content | `podcast_create_blog`, `podcast_draft_social`, `podcast_stage_thumbnail`, `podcast_render_thumbnail` |
+| Distribution | `podcast_upload_media_asset`, `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, `podcast_post_to_x` |
 | Metrics | `podcast_metrics_collect`, `podcast_metrics_summary`, `podcast_episode_metrics`, `podcast_metrics_report` |
 
 ## Common Commands
@@ -148,7 +166,9 @@ The engine refuses to:
 - **Publish unrelated website work**: deploys commit only generated files, only from `WEBSITE_BRANCH`.
 - **Publish broken downloads**: episodes whose audio isn't in R2 are left out of the feed and pages.
 - **Upload arbitrary files** to the public bucket, or overwrite existing (immutably cached) objects.
-- **Leak credentials**: downloads are https-only, and the Descript token is sent only to Descript hosts.
+- **Leak credentials**: downloads are https-only, the Descript token is sent only to Descript hosts, and X and YouTube tokens stay in their own CLIs' or OAuth files.
+- **Attach arbitrary files**: X media and YouTube thumbnails accept only image/video types within each platform's size limits, checked before any upload.
+- **Lose track of public actions**: every X post, YouTube upload, and thumbnail change is logged as soon as it succeeds, so an agent can check before retrying instead of posting twice.
 
 ## Troubleshooting
 
@@ -159,6 +179,8 @@ The engine refuses to:
 | Rewritten show notes don't reach podcast apps | Update `content_markdown` (a trigger clears stale imported HTML), then rebuild and deploy. |
 | Backup re-downloads audio every run | Catalog byte lengths don't match R2; sizes must come from the stored object (the importer's `--mirror` records them). |
 | `core.doctor`: domain resolves publicly but not locally | Your resolver cached an old "no such host" answer; it clears on its own. |
+| Doctor says a metrics source is ready, but collection fails | The doctor checks settings, not live access. The run's message says what to fix, e.g. Cloudflare `does not have permission ... zone.analytics.read` (add a token policy scoped to the zone/domain with Analytics Read) or YouTube `API has not been used in project ...` (enable YouTube Analytics API in that Cloud project). |
+| `podcast_set_youtube_thumbnail` returns 403 | Custom thumbnails aren't enabled for the channel; verify it in YouTube Studio (phone verification). |
 
 ---
 
@@ -166,11 +188,12 @@ The engine refuses to:
 
 ```
 podcast_server/
-├── core/                  # config, catalog (db), R2 storage, feed XML, site output + deploy, doctor, helpers
-├── mcp_server/server.py   # the 17 MCP tools
+├── core/                  # config, catalog (db), R2 storage, feed XML, site output + deploy, doctor, thumbnail renderer, helpers
+├── mcp_server/server.py   # the 19 MCP tools
 ├── importers/             # rss.py (any host, GUID-preserving), descript.py (staging)
-├── exporters/             # Astro pages, blog posts, social drafts, X posting, YouTube upload
-├── metrics/               # collectors (OP3, Cloudflare, X, plugins), store, analysis, dashboard
+├── exporters/             # Astro pages, blog posts, social drafts, X posting, YouTube upload + thumbnails
+├── metrics/               # collectors (OP3, Cloudflare, X, YouTube, plugins), store, analysis, dashboard
+├── bin/                   # run-mcp.sh (MCP launcher), collect-metrics.sh (scheduler entry)
 ├── scripts/backup_to_hf.py
 ├── examples/show-data/    # template for your private DATA_DIR
 ├── tests/

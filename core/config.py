@@ -189,6 +189,11 @@ class Settings(BaseSettings):
         return self.data_dir / "social" / "youtube_uploads.jsonl"
 
     @property
+    def youtube_thumbnail_log_path(self) -> Path:
+        """Append-only record of every custom thumbnail set on YouTube, so metrics can mark the change."""
+        return self.data_dir / "social" / "youtube_thumbnails.jsonl"
+
+    @property
     def youtube_videos_file(self) -> Path:
         """Optional mapping of the show's other YouTube videos to episodes, for metrics on a back catalog."""
         return self.data_dir / "youtube_videos.json"

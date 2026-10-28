@@ -37,7 +37,9 @@ Never copy playbook content, show data, or show-specific values into this reposi
 | `podcast_publish_to_youtube` | `video_path, title, description, tags, privacy_status, episode_slug` | Resumable upload to the authenticated YouTube channel. Logs each upload (with `episode_slug`) to `$DATA_DIR/social/youtube_uploads.jsonl`; YouTube metrics cover logged uploads plus `$DATA_DIR/youtube_videos.json`. |
 | `podcast_draft_social` | `title, guest_name, core_tension, technical_specs, episode_url, youtube_url` | Fills the show's social post templates (`$DATA_DIR/templates/`). |
 | `podcast_post_to_x` | `text, media_path, dry_run, episode_slug` | Posts to X as `X_USERNAME` through xurl, with one optional image, GIF, or video. Refuses non-media files before uploading. Logs each accepted post (with `episode_slug`) to `$DATA_DIR/social/x_posts.jsonl`; X metrics cover only logged posts. **Live and public: only post text and media the human approved verbatim.** |
-| `podcast_stage_thumbnail` | `prompt_text, output_filename, style` | Builds a 16:9 thumbnail prompt and returns where to save the image. Does not generate it. |
+| `podcast_stage_thumbnail` | `prompt_text, output_filename, style` | Thumbnail step 1: builds a 16:9 art prompt (no lettering, empty right side) and returns where to save the art. Does not generate it; render it with your image model. |
+| `podcast_render_thumbnail` | `base_image_path, headline_lines, slug, label, accent_line` | Thumbnail step 2: composites the headline (and an optional small label) onto the art in the show's style (`$DATA_DIR/templates/thumbnail_style.json`), auto-fitted and clear of the duration badge. Writes `$DATA_DIR/thumbnails/<slug>-final.png` (JPEG if over 2 MB). |
+| `podcast_set_youtube_thumbnail` | `video_id, thumbnail_path, episode_slug` | Thumbnail step 3: sets the custom thumbnail on YouTube. **Public: only an image the human approved.** Logs to `$DATA_DIR/social/youtube_thumbnails.jsonl`; the metrics dashboard pins the change. |
 | `podcast_metrics_collect` | `sources, days` | Read-only: fetches audience metrics from every configured source (or the named ones) into `$DATA_DIR/metrics.db`, resuming where each left off. Returns per-source `ok` / `skipped` (with what to configure) / `failed`. |
 | `podcast_metrics_summary` | `days=30` | Headline numbers vs the previous period, top episodes, top apps/countries, and each source's freshness. |
 | `podcast_episode_metrics` | `slug` | Daily downloads/listens per source for one episode, plus the social posts that link to it. |
@@ -56,8 +58,9 @@ Never copy playbook content, show data, or show-specific values into this reposi
 3. **Human review gate. Stop and present the package. Do not publish without explicit approval.**
 4. **Publish:** `podcast_publish(...)`. Check the response: `git_deploy.status` should be `pushed` (astro) or `not_applicable` (none mode, where the feed is live once uploaded). If it's `skipped` or `failed`, see section 5.
 5. **Verify:** the audio URL returns HTTP 206 for a range request, and `PODCAST_FEED_URL` returns 200 and lists the episode.
-6. **Promote (optional):** draft with `podcast_draft_social`, get explicit approval of the exact text and media, optionally check with `podcast_post_to_x(..., dry_run=true)`, then post with `episode_slug` set so its metrics are credited to the episode. Return the post URL. If a post call fails, read `$DATA_DIR/social/x_posts.jsonl` before retrying so a post that went through isn't sent twice.
-7. **Back up:** `uv run python scripts/backup_to_hf.py` (if `HF_BACKUP_REPO` is set).
+6. **Thumbnail (video episodes):** `podcast_stage_thumbnail` → render the art with your image model → `podcast_render_thumbnail` → show the result and get approval → `podcast_set_youtube_thumbnail`.
+7. **Promote (optional):** draft with `podcast_draft_social`, get explicit approval of the exact text and media, optionally check with `podcast_post_to_x(..., dry_run=true)`, then post with `episode_slug` set so its metrics are credited to the episode. Return the post URL. If a post call fails, read `$DATA_DIR/social/x_posts.jsonl` before retrying so a post that went through isn't sent twice.
+8. **Back up:** `uv run python scripts/backup_to_hf.py` (if `HF_BACKUP_REPO` is set).
 
 ## 5. Common Operations
 
