@@ -28,9 +28,9 @@ Podcast hosting services charge monthly for object storage, a database table, an
 | `core/site.py` | Publishes the feed (R2 or website repo), syncs episode pages, scoped git deploy. |
 | `core/doctor.py` | End-to-end setup check. |
 | `core/thumbnail.py` | Thumbnail art prompts and the style-file headline renderer (Pillow). |
-| `core/jsonl.py` | Append-only logs of public actions (X posts, YouTube uploads, thumbnail changes). |
+| `core/jsonl.py` | Append-only logs of public actions (X posts, dev.to and Substack drafts, YouTube uploads, thumbnail changes). |
 | `importers/` | `rss.py` (any host, GUID-preserving), `descript.py` (staging, chapters). |
-| `exporters/` | Astro Markdown pages, blog posts, social templates, X posting (via xurl), YouTube. |
+| `exporters/` | Astro Markdown pages, blog posts, social templates, X posting (via xurl), dev.to and Substack drafts (shared loader: `blog_post.crosspost_source`), YouTube. |
 | `metrics/` | Audience metrics: `collectors/` (OP3, Cloudflare, X, YouTube; plugins via `METRICS_EXTRA_COLLECTORS`), `store.py` (`metrics.db`), `analysis.py`, `report.py` (offline HTML dashboard), `collect.py` (CLI + scheduler entry). |
 
 ### Metrics Pipeline
@@ -103,6 +103,8 @@ CREATE TABLE collection_runs (id, source, started_at, finished_at, status, windo
 | Setup doctor, HF backups, exclusion list | Done |
 | Audience metrics: OP3 / Cloudflare / X / YouTube collectors, plugin contract, dashboard, MCP tools | Done |
 | YouTube thumbnails: prompt staging, style-file renderer, setter with change log + dashboard markers | Done |
+| Blog cross-posting to dev.to: unpublished drafts with canonical URL, log + duplicate check | Done |
+| Blog cross-posting to Substack: unpublished drafts via python-substack (private API), attribution line, https-only images, log + duplicate check | Done |
 | Metrics: Apple/Spotify CSV import collectors | Planned |
 | Transcription, vector index, semantic search | Planned |
 

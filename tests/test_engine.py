@@ -11,6 +11,7 @@ repo, and R2 bucket are never touched.
 # environment (see fake_show.py) must be set before the imports below.
 import fake_show  # noqa: F401 - must precede every engine import
 
+import io
 import json
 import shutil
 import sqlite3
@@ -422,6 +423,18 @@ class ConfigurationTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"SITE_MODE": "astro", "WEBSITE_PATH": ""}), self.assertRaises(ValidationError):
             Settings(website_path=None)
 
+    def test_blog_url_template_must_be_https_with_slug(self) -> None:
+        """The dev.to canonical URL template fails at startup when it isn't https or lacks {slug}."""
+        from pydantic import ValidationError
+
+        from core.config import Settings
+
+        for template in ("http://example.com/blog/{slug}/", "https://example.com/blog/"):
+            with self.subTest(template=template), self.assertRaises(ValidationError):
+                Settings(blog_url_template=template)
+        with self.assertRaises(ValidationError):
+            Settings(substack_publication_url="http://show.substack.com")
+
     def test_none_mode_links_items_to_homepage_and_uploads_feed(self) -> None:
         """Without a website, items link to the show page and the feed goes to R2 with a short cache."""
         from core.site import FEED_CACHE, deploy_site, rebuild_site
@@ -547,6 +560,258 @@ class XPostTests(unittest.TestCase):
         self.assertEqual((logged["tweet_id"], logged["text"]), ("t-9", "-new episode"))
         # The metrics collector reads this log, so the episode credit must be recorded with the post.
         self.assertEqual(logged["episode_slug"], "ep-one")
+
+
+class DevtoTests(unittest.TestCase):
+    """Cross-posting blog posts to dev.to as drafts: pre-request guards, the payload, and duplicate checks.
+
+    open_https is always mocked, so no test talks to dev.to.
+    """
+
+    CANONICAL = "https://example.com/blog/ep-one/"
+
+    def setUp(self) -> None:
+        """Point settings at temp dirs with cross-posting configured, and write one published blog post."""
+        from exporters.blog_post import create_blog_post
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.saved = (settings.website_path, settings.data_dir, settings.devto_api_key, settings.blog_url_template)
+        settings.website_path, settings.data_dir = self.tmp / "site", self.tmp / "data"
+        settings.devto_api_key, settings.blog_url_template = "test-key", "https://example.com/blog/{slug}/"
+        create_blog_post(
+            title="Episode One Notes",
+            description="What we learned.",
+            content_markdown="See [the last post](/blog/older/) and [docs](https://docs.example.com/x).\n\n![art](/media/a.png)",
+            slug="ep-one",
+        )
+
+    def tearDown(self) -> None:
+        """Restore settings and remove the temp dir."""
+        settings.website_path, settings.data_dir, settings.devto_api_key, settings.blog_url_template = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _replies(*bodies: Any) -> mock.MagicMock:
+        """Mock open_https returning each body in turn as a JSON response."""
+        return mock.MagicMock(side_effect=[io.BytesIO(json.dumps(body).encode()) for body in bodies])
+
+    def test_relative_links_point_at_the_site_and_full_urls_stay(self) -> None:
+        """Site-relative links and images become absolute; links that are already full URLs are untouched."""
+        from exporters.blog_post import absolutize_links
+
+        markdown = "[a](/blog/older/) [b](https://docs.example.com/x) ![c](/media/a.png)"
+        self.assertEqual(
+            absolutize_links(markdown, self.CANONICAL),
+            "[a](https://example.com/blog/older/) [b](https://docs.example.com/x) "
+            "![c](https://example.com/media/a.png)",
+        )
+
+    def test_bad_input_and_missing_config_refused_before_any_request(self) -> None:
+        """Invalid tags, a missing post, a site draft, or missing settings never reach dev.to."""
+        from exporters.blog_post import create_blog_post
+        from exporters.devto import DevtoError, crosspost_to_devto
+
+        create_blog_post(title="WIP", description="d", content_markdown="body", slug="wip", draft=True)
+        with mock.patch("exporters.devto.open_https") as request:
+            for tags in (["a", "b", "c", "d", "e"], ["Machine Learning"]):
+                with self.subTest(tags=tags), self.assertRaises(ValueError):
+                    crosspost_to_devto("ep-one", tags=tags)
+            with self.assertRaises(FileNotFoundError):
+                crosspost_to_devto("missing-post")
+            with self.assertRaises(ValueError):
+                crosspost_to_devto("wip")
+            settings.blog_url_template = None
+            with self.assertRaises(ValueError):
+                crosspost_to_devto("ep-one")
+            settings.blog_url_template, settings.devto_api_key = "https://example.com/blog/{slug}/", None
+            with self.assertRaises(DevtoError):
+                crosspost_to_devto("ep-one", dry_run=True)
+        request.assert_not_called()
+
+    def test_dry_run_reports_without_calling_devto(self) -> None:
+        """dry_run shows the title, canonical URL, and tags that would be sent."""
+        from exporters.devto import crosspost_to_devto
+
+        with mock.patch("exporters.devto.open_https") as request:
+            preview = crosspost_to_devto("ep-one", tags=["robotics"], dry_run=True)
+        request.assert_not_called()
+        self.assertEqual(
+            (preview["status"], preview["title"], preview["canonical_url"], preview["tags"]),
+            ("dry_run", "Episode One Notes", self.CANONICAL, ["robotics"]),
+        )
+
+    def test_canonical_declared_in_frontmatter_wins(self) -> None:
+        """A post first published elsewhere keeps that original as its canonical URL."""
+        from exporters.blog_post import blog_post_path
+        from exporters.devto import crosspost_to_devto
+
+        path = blog_post_path("guest-post")
+        path.write_text('---\ntitle: "Guest"\ncanonical: "https://partner.example.com/post"\n---\n\nBody\n')
+        preview = crosspost_to_devto("guest-post", dry_run=True)
+        self.assertEqual(preview["canonical_url"], "https://partner.example.com/post")
+
+    def test_creates_unpublished_draft_with_canonical_url_and_logs_it(self) -> None:
+        """The draft is never published, credits the site, drops the frontmatter, and is logged."""
+        from exporters.devto import crosspost_to_devto
+
+        request = self._replies([], {"id": 7, "url": "https://dev.to/someone/episode-one-notes-temp"})
+        with mock.patch("exporters.devto.open_https", request):
+            result = crosspost_to_devto("ep-one", tags=["robotics", "ai"])
+
+        lookup, create = request.call_args_list
+        self.assertTrue(lookup.args[0].startswith("https://dev.to/api/articles/me/all"))
+        url, headers, data = create.args
+        article = json.loads(data)["article"]
+        self.assertEqual((url, headers["api-key"]), ("https://dev.to/api/articles", "test-key"))
+        self.assertEqual((article["published"], article["canonical_url"]), (False, self.CANONICAL))
+        self.assertEqual((article["title"], article["tags"]), ("Episode One Notes", "robotics, ai"))
+        self.assertTrue(article["body_markdown"].startswith("See [the last post](https://example.com/blog/older/)"))
+        self.assertEqual((result["status"], result["article_id"]), ("draft_created", 7))
+        logged = json.loads(settings.devto_post_log_path.read_text())
+        self.assertEqual((logged["slug"], logged["article_id"]), ("ep-one", 7))
+
+    def test_existing_draft_is_returned_instead_of_creating_another(self) -> None:
+        """A logged draft answers without a request; an unlogged one (e.g. a timed-out POST) is found on dev.to."""
+        from core.jsonl import append_record
+        from exporters.devto import crosspost_to_devto
+
+        remote = {"id": 3, "url": "https://dev.to/someone/remote", "canonical_url": self.CANONICAL}
+        request = self._replies([remote])
+        with mock.patch("exporters.devto.open_https", request):
+            found_remotely = crosspost_to_devto("ep-one")
+        self.assertEqual(request.call_count, 1)  # the lookup only, no POST
+        self.assertEqual((found_remotely["status"], found_remotely["article_id"]), ("exists", 3))
+
+        append_record(settings.devto_post_log_path, {"slug": "ep-one", "article_id": 9, "url": "https://dev.to/x"})
+        with mock.patch("exporters.devto.open_https") as request:
+            found_in_log = crosspost_to_devto("ep-one")
+        request.assert_not_called()
+        self.assertEqual((found_in_log["status"], found_in_log["article_id"]), ("exists", 9))
+
+    def test_rejection_reports_devto_message_without_the_key(self) -> None:
+        """dev.to's own explanation reaches the agent; the API key never appears in the error."""
+        import urllib.error
+
+        from exporters.devto import DevtoError, crosspost_to_devto
+
+        rejection = urllib.error.HTTPError(
+            "https://dev.to/api/articles/me/all", 401, "Unauthorized", None, io.BytesIO(b'{"error": "unauthorized"}')
+        )
+        with mock.patch("exporters.devto.open_https", side_effect=rejection), self.assertRaises(DevtoError) as caught:
+            crosspost_to_devto("ep-one")
+        self.assertIn("HTTP 401", str(caught.exception))
+        self.assertIn("unauthorized", str(caught.exception))
+        self.assertNotIn("test-key", str(caught.exception))
+
+
+class SubstackTests(unittest.TestCase):
+    """Cross-posting blog posts to Substack as drafts: guards, attribution, duplicate checks, and the cookie file.
+
+    python-substack's Api is always mocked, so no test signs in to Substack.
+    """
+
+    def setUp(self) -> None:
+        """Point settings at temp dirs with Substack configured and a cookie file, and write one published post."""
+        from exporters.blog_post import create_blog_post
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.saved = (
+            settings.website_path, settings.data_dir, settings.blog_url_template,
+            settings.substack_publication_url, settings.substack_cookies_path,
+        )
+        settings.website_path, settings.data_dir = self.tmp / "site", self.tmp / "data"
+        settings.blog_url_template = "https://example.com/blog/{slug}/"
+        settings.substack_publication_url = "https://show.substack.com"
+        settings.substack_cookies_path = self.tmp / "cookies.json"
+        settings.substack_cookies_path.write_text('{"substack.sid": "s:abc"}')
+        create_blog_post(
+            title="Episode One Notes",
+            description="What we learned.",
+            content_markdown="See [the last post](/blog/older/).\n\n![art](/media/a.png)",
+            slug="ep-one",
+            tags=["Field Notes"],
+        )
+
+    def tearDown(self) -> None:
+        """Restore settings and remove the temp dir."""
+        (
+            settings.website_path, settings.data_dir, settings.blog_url_template,
+            settings.substack_publication_url, settings.substack_cookies_path,
+        ) = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_local_images_refused_and_unsupported_content_reported(self) -> None:
+        """A non-https image never reaches the library; tables and raw HTML come back as warnings."""
+        from exporters.substack_post import inspect_body
+
+        with self.assertRaises(ValueError):
+            inspect_body("![secret](notes/secret.png)")
+        warnings = inspect_body("| a | b |\n|---|---|\n| 1 | 2 |\n\n<div>x</div>\n\n![ok](https://cdn.example.com/a.png)")
+        self.assertEqual(len(warnings), 2)
+
+    def test_missing_config_refused_and_dry_run_never_signs_in(self) -> None:
+        """No publication URL or cookie file means no sign-in; dry_run previews without one."""
+        from exporters.substack_post import SubstackError, crosspost_to_substack
+
+        with mock.patch("exporters.substack_post.Api") as api:
+            preview = crosspost_to_substack("ep-one", dry_run=True)
+            settings.substack_cookies_path = self.tmp / "missing.json"
+            with self.assertRaises(SubstackError):
+                crosspost_to_substack("ep-one")
+            settings.substack_publication_url = None
+            with self.assertRaises(SubstackError):
+                crosspost_to_substack("ep-one", dry_run=True)
+        api.assert_not_called()
+        self.assertEqual((preview["status"], preview["tags"], preview["warnings"]), ("dry_run", ["Field Notes"], []))
+
+    def test_creates_unpublished_draft_with_attribution_and_logs_it(self) -> None:
+        """The draft is never published, credits the original first, uses absolute links, and is logged."""
+        from exporters.substack_post import crosspost_to_substack
+
+        with mock.patch("exporters.substack_post.Api") as api:
+            client = api.return_value
+            client.get_drafts.return_value = []
+            client.get_published_posts.return_value = {"posts": []}
+            client.create_draft_from_markdown.return_value = {"draft": {"id": 42}}
+            result = crosspost_to_substack("ep-one")
+
+        self.assertEqual(api.call_args.kwargs["publication_url"], "https://show.substack.com")
+        kwargs = client.create_draft_from_markdown.call_args.kwargs
+        self.assertFalse(kwargs["publish"])
+        self.assertEqual((kwargs["slug"], kwargs["tags"]), ("ep-one", ["Field Notes"]))
+        self.assertTrue(kwargs["markdown"].startswith(
+            "*Originally published at [example.com](https://example.com/blog/ep-one/).*\n\n"
+            "See [the last post](https://example.com/blog/older/)."
+        ))
+        self.assertEqual((result["status"], result["edit_url"]), ("draft_created", "https://show.substack.com/publish/post/42"))
+        logged = json.loads(settings.substack_post_log_path.read_text())
+        self.assertEqual((logged["slug"], logged["draft_id"]), ("ep-one", 42))
+
+    def test_existing_draft_is_returned_instead_of_creating_another(self) -> None:
+        """A logged draft answers without signing in; one found on Substack (e.g. after a failed call) is reused."""
+        from core.jsonl import append_record
+        from exporters.substack_post import crosspost_to_substack
+
+        with mock.patch("exporters.substack_post.Api") as api:
+            api.return_value.get_drafts.return_value = [{"id": 7, "draft_title": "Episode One Notes"}]
+            api.return_value.get_published_posts.return_value = {"posts": []}
+            found_remotely = crosspost_to_substack("ep-one")
+        api.return_value.create_draft_from_markdown.assert_not_called()
+        self.assertEqual((found_remotely["status"], found_remotely["draft_id"]), ("exists", 7))
+
+        append_record(settings.substack_post_log_path, {"slug": "ep-one", "draft_id": 9, "edit_url": "https://x"})
+        with mock.patch("exporters.substack_post.Api") as api:
+            found_in_log = crosspost_to_substack("ep-one")
+        api.assert_not_called()
+        self.assertEqual((found_in_log["status"], found_in_log["draft_id"]), ("exists", 9))
+
+    def test_cookie_file_is_private_and_decoded(self) -> None:
+        """The saved cookie is readable only by its owner and stored decoded under both session names."""
+        from exporters.substack_post import save_session_cookie
+
+        path = save_session_cookie(" s%3Aabc.def \n")
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(path.read_text()), {"substack.sid": "s:abc.def", "connect.sid": "s:abc.def"})
 
 
 if __name__ == "__main__":

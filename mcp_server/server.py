@@ -22,7 +22,9 @@ from core.site import deploy_site, rebuild_site
 from core.storage import R2StorageClient
 from core.thumbnail import generate_youtube_thumbnail, render_thumbnail
 from exporters.blog_post import blog_post_path, create_blog_post
+from exporters.devto import crosspost_to_devto
 from exporters.social import draft_social_package
+from exporters.substack_post import crosspost_to_substack
 from exporters.x_post import post_to_x
 from exporters.youtube import PrivacyStatus, set_video_thumbnail, upload_video_to_youtube
 from importers.descript import (
@@ -421,6 +423,20 @@ def podcast_post_to_x(
 ) -> dict[str, Any]:
     """Post to X as the configured account (only after explicit human approval of the exact text and media). Attaches one optional image, GIF, or video; dry_run checks everything without posting. Pass episode_slug when promoting an episode so the post's metrics are credited to it. Returns the post id and URL."""
     return post_to_x(text=text, media_path=media_path, dry_run=dry_run, episode_slug=episode_slug)
+
+
+# Additive, not public: it only creates an unpublished draft, which the human publishes on dev.to.
+@mcp.tool(annotations=ADDITIVE_EXTERNAL)
+def podcast_crosspost_to_devto(blog_slug: str, tags: list[str] | None = None, dry_run: bool = False) -> dict[str, Any]:
+    """Cross-post a published companion blog post (from podcast_publish or podcast_create_blog) to dev.to as an unpublished draft, with a canonical URL back to the website (or the post's own `canonical` frontmatter, if it was first published elsewhere) and site-relative links made absolute. Up to 4 tags, lowercase letters and digits only. Never publishes: the human reviews and publishes the draft on dev.to. If a draft of the post already exists, returns it instead of creating another, so retrying is safe. dry_run checks everything without calling dev.to."""
+    return crosspost_to_devto(slug=blog_slug, tags=tags, dry_run=dry_run)
+
+
+# Additive, not public: it only creates an unpublished draft, which the human publishes (and emails) on Substack.
+@mcp.tool(annotations=ADDITIVE_EXTERNAL)
+def podcast_crosspost_to_substack(blog_slug: str, dry_run: bool = False) -> dict[str, Any]:
+    """Cross-post a published companion blog post to Substack as an unpublished draft, opened by an "Originally published at" line linking to the original (Substack has no canonical URL setting), with site-relative links made absolute and the post's tags. Images must be https URLs. Returns warnings for content Substack can't show (tables, raw HTML) so the human can fix the draft. Never publishes or emails: the human does that in Substack's editor. If a draft of the post already exists, returns it instead of creating another, so retrying is safe. dry_run checks everything without contacting Substack. Uses Substack's private API, which can change; report failures as they are."""
+    return crosspost_to_substack(slug=blog_slug, dry_run=dry_run)
 
 
 @mcp.tool(annotations=LOCAL_WRITE)

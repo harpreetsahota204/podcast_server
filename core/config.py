@@ -89,6 +89,21 @@ class Settings(BaseSettings):
     x_username: str | None = Field(default=None, description="X handle to post as (no @); unset disables posting")
     xurl_app: str | None = Field(default=None, description="App name inside the xurl auth file")
     xurl_path: Path | None = Field(default=None, description="xurl binary; default: first xurl on PATH")
+    # dev.to cross-posting creates drafts only; the human publishes them from the dev.to dashboard.
+    devto_api_key: str | None = Field(default=None, description="dev.to API key; unset disables cross-posting")
+    blog_url_template: str | None = Field(
+        default=None,
+        description="Public URL of a blog post with a {slug} placeholder; the canonical URL of cross-posts",
+    )
+    # Substack has no official publishing API: drafts go through its private web API with a browser
+    # session cookie, which controls the whole account, so it lives in its own 0600 file, never in .env.
+    substack_publication_url: str | None = Field(
+        default=None, description="Your publication, e.g. https://name.substack.com; unset disables Substack drafts"
+    )
+    substack_cookies_path: Path = Field(
+        default=Path.home() / ".config" / "podcast_server" / "substack_cookies.json",
+        description="Session cookie file written by `python -m exporters.substack_post login`",
+    )
 
     # --- Metrics (all optional; each source is collected only once it's configured) ---
     metrics_db_path: Path | None = None
@@ -122,6 +137,15 @@ class Settings(BaseSettings):
             self.metrics_db_path = self.data_dir / "metrics.db"
         if self.site_mode == "astro" and self.website_path is None:
             raise ValueError("SITE_MODE=astro needs WEBSITE_PATH (the local checkout of your site repo).")
+        # The template becomes a public canonical URL, so a typo must fail at startup, not on dev.to.
+        if self.blog_url_template and (
+            not self.blog_url_template.startswith("https://") or "{slug}" not in self.blog_url_template
+        ):
+            raise ValueError("BLOG_URL_TEMPLATE must be an https:// URL containing {slug}.")
+        if self.substack_publication_url:
+            if not self.substack_publication_url.startswith("https://"):
+                raise ValueError("SUBSTACK_PUBLICATION_URL must be an https:// URL.")
+            self.substack_publication_url = self.substack_publication_url.rstrip("/")
         return self
 
     # --- Derived paths ---
@@ -202,6 +226,16 @@ class Settings(BaseSettings):
     def x_post_log_path(self) -> Path:
         """Append-only record of every post X accepted (one JSON object per line)."""
         return self.data_dir / "social" / "x_posts.jsonl"
+
+    @property
+    def devto_post_log_path(self) -> Path:
+        """Append-only record of every dev.to draft the engine created (one JSON object per line)."""
+        return self.data_dir / "social" / "devto_posts.jsonl"
+
+    @property
+    def substack_post_log_path(self) -> Path:
+        """Append-only record of every Substack draft the engine created (one JSON object per line)."""
+        return self.data_dir / "social" / "substack_posts.jsonl"
 
     @property
     def excluded_episodes_file(self) -> Path:

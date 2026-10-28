@@ -163,6 +163,18 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
 3. **Engine settings.** In `.env`: `X_USERNAME=<handle without @>`, plus `XURL_APP=my-show` if xurl holds more than one app and `XURL_PATH=/path/to/xurl` if it isn't on `PATH`. `uv run python -m core.doctor` reports whether X posting is ready.
 4. **Try it.** Ask your agent for `podcast_post_to_x(text=..., dry_run=true)`: it runs every check without posting. Real posts are appended to `$DATA_DIR/social/x_posts.jsonl`. When promoting an episode, pass `episode_slug` so the post's metrics are credited to it.
 
+**Cross-posting blogs to dev.to** (`podcast_crosspost_to_devto`, about 5 minutes; needs `SITE_MODE=astro`): the engine sends your companion blog post to dev.to as an **unpublished draft**, and you publish it from the dev.to dashboard.
+1. **API key.** On dev.to, open Settings → Extensions → DEV Community API Keys, name a key, and generate it.
+2. **Engine settings.** In `.env`: `DEVTO_API_KEY=<the key>` and `BLOG_URL_TEMPLATE=https://myshow.com/blog/{slug}/`, the public URL of a blog post on your site. That URL becomes the draft's canonical URL, so search engines credit your site rather than dev.to. `uv run python -m core.doctor` shows which dev.to account drafts will go to.
+3. **Try it.** After a blog post is live on your site, ask your agent for `podcast_crosspost_to_devto(blog_slug=..., tags=[...], dry_run=true)`, then run it without `dry_run`. dev.to allows up to 4 tags, lowercase letters and digits only (e.g. `machinelearning`). Drafts are logged to `$DATA_DIR/social/devto_posts.jsonl`, and calling it again for the same post returns the existing draft.
+
+**Cross-posting blogs to Substack** (`podcast_crosspost_to_substack`, about 5 minutes; needs `SITE_MODE=astro` and `BLOG_URL_TEMPLATE` from the dev.to steps): the engine sends your companion blog post to Substack as an **unpublished draft**; you publish it, and choose whether to email subscribers, in Substack's editor. Substack has no official publishing API, so this goes through its private web API with the community [python-substack](https://github.com/ma2za/python-substack) library. Know the trade-offs: it signs in with your browser session cookie, which controls your whole Substack account; the cookie expires (sign in again when the doctor says so); and Substack can change the private API at any time.
+1. **Session cookie.** In a browser signed in to Substack, open DevTools → Application → Cookies → `https://substack.com` and copy the value of `substack.sid` (or `connect.sid`). Then run `uv run python -m exporters.substack_post login` and paste it at the hidden prompt. It's saved to `SUBSTACK_COOKIES_PATH` (default `~/.config/podcast_server/substack_cookies.json`, mode 600), never to `.env`, and the command prints your publication's URL.
+2. **Engine settings.** In `.env`: `SUBSTACK_PUBLICATION_URL=https://myshow.substack.com` (or your custom domain). `uv run python -m core.doctor` confirms the cookie signs in.
+3. **Try it.** After a blog post is live on your site, ask your agent for `podcast_crosspost_to_substack(blog_slug=..., dry_run=true)`, then without `dry_run`. Substack can't set a canonical URL, so each draft opens with "Originally published at" and a link to your post. Images must be web (https) URLs. Tables and raw HTML don't survive Substack's editor; the tool lists them as `warnings` so you can fix the draft. Drafts are logged to `$DATA_DIR/social/substack_posts.jsonl`, and calling it again for the same post returns the existing draft.
+
+**Episodes on Substack** need no engine changes: in Substack, open Podcast → *I have a podcast hosted elsewhere* → *Distribute to Substack*, paste your feed URL, and turn auto-publish off so each new episode arrives as a draft. Substack plays the audio from your bucket, so your downloads and analytics stay where they are.
+
 **Backups:** `hf auth login` once, set `HF_BACKUP_REPO` to a dataset id under your account (it's created private on first run), then run the backup after each publish (below).
 
 **Audience metrics** (`podcast_metrics_*` tools, `python -m metrics.collect`): each source is optional and switches on once its settings are present. `uv run python -m core.doctor` lists which are ready.
@@ -197,6 +209,8 @@ To add a source (YouTube, a hosting platform's CSV export, a newsletter), subcla
 | Rebuild the feed (and pages) | `podcast_rebuild_feed` tool, or `uv run python -m core.site` |
 | Back up | Set `HF_BACKUP_REPO`, run `hf auth login` once, then call the `podcast_backup` tool (or run `uv run python scripts/backup_to_hf.py`) after each publish. It mirrors every MP3, a catalog snapshot, and your show assets to a **private** Hugging Face dataset, uploading only what changed. |
 | Re-check setup | `uv run python -m core.doctor` |
+| Cross-post the blog | Agent: `podcast_crosspost_to_devto` and `podcast_crosspost_to_substack` once the post is live → you publish each draft on its platform |
+| Substack says the cookie expired | `uv run python -m exporters.substack_post login` with a fresh cookie value |
 | Make a YouTube thumbnail | Agent: `podcast_stage_thumbnail` → renders the art → `podcast_render_thumbnail` → your approval → `podcast_set_youtube_thumbnail` |
 | Check audience numbers | Agent: `podcast_metrics_summary`; or open `$DATA_DIR/metrics/dashboard.html` (refreshed by the daily `bin/collect-metrics.sh`) |
 

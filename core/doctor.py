@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 from core.config import settings
 from core.net import open_https
 from core.storage import R2StorageClient
+from exporters.devto import DevtoError, devto_username
+from exporters.substack_post import SubstackError, substack_publication
 from exporters.x_post import XPostError, xurl_command
 
 Check = tuple[str, str]  # (status, detail)
@@ -125,6 +127,36 @@ def check_x_posting() -> Check:
     return "PASS", f"posting as @{settings.x_username} via {command[0]}; verify the login with `xurl whoami`"
 
 
+def check_devto() -> Check:
+    """dev.to cross-posting is off, or the API key works and drafts get a canonical URL."""
+    if not settings.devto_api_key:
+        return "PASS", "off (set DEVTO_API_KEY and BLOG_URL_TEMPLATE to enable)"
+    if not settings.blog_url_template:
+        return "WARN", "DEVTO_API_KEY is set but BLOG_URL_TEMPLATE isn't; cross-posting refuses without a canonical URL."
+    try:
+        username = devto_username()
+    except DevtoError as e:
+        return "WARN", str(e)
+    return "PASS", f"drafts go to dev.to/{username}; canonical URL {settings.blog_url_template}"
+
+
+def check_substack() -> Check:
+    """Substack drafts are off, or the saved session cookie is private and still signs in."""
+    if not settings.substack_publication_url:
+        return "PASS", "off (set SUBSTACK_PUBLICATION_URL and run `python -m exporters.substack_post login`)"
+    if not settings.blog_url_template:
+        return "WARN", "SUBSTACK_PUBLICATION_URL is set but BLOG_URL_TEMPLATE isn't; cross-posting refuses without it."
+    cookies = settings.substack_cookies_path.expanduser()
+    # The cookie controls the whole Substack account, so a file others can read is a failure, not a warning.
+    if cookies.is_file() and cookies.stat().st_mode & 0o077:
+        return "FAIL", f"{cookies} is readable by other users; run `chmod 600 {cookies}`."
+    try:
+        publication = substack_publication()
+    except SubstackError as e:
+        return "WARN", str(e)
+    return "PASS", f"drafts go to {publication} (private API; the session cookie expires, re-run login then)"
+
+
 def check_metrics_sources() -> Check:
     """Report which metric collectors can run; WARN if one named in METRICS_SOURCES can't."""
     # Imported here so a broken extra collector only fails this check, not the whole doctor.
@@ -152,6 +184,8 @@ CHECKS: list[tuple[str, Callable[[], Check]]] = [
     ("Feed URL", check_feed_url),
     ("Optional integrations", check_optional),
     ("X posting", check_x_posting),
+    ("dev.to cross-posting", check_devto),
+    ("Substack cross-posting", check_substack),
     ("Metrics sources", check_metrics_sources),
 ]
 

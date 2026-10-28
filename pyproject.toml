@@ -17,11 +17,12 @@ dependencies = [
     "google-auth>=2.20.0",
     "huggingface_hub>=0.30.0",
     "pillow>=13.0.0",
+    "pyyaml>=6.0",
+    "python-substack>=0.10,<0.11",
 ]
 
 [dependency-groups]
 dev = [
-    "pyyaml>=6.0",  # tests parse generated YAML frontmatter
     "ruff>=0.6",
 ]
 

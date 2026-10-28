@@ -29,7 +29,7 @@ Your AI agent is the interface. You're the approver.
 
 Podcast hosts charge a monthly fee for three things: storage for the audio, a database of episodes, and an RSS feed, all behind a web dashboard. `podcast_server` keeps those three on infrastructure you own and replaces the dashboard with [MCP](https://modelcontextprotocol.io) tools. The "user interface" is whichever AI agent you already use: Claude, Cursor, Codex, or your own.
 
-You talk to your agent: *"The interview with Ada is ready in Descript. Prep it."* The agent stages the episode, drafts titles and show notes in your show's voice, and stops. You approve. The agent publishes, uploads the video, sets the thumbnail, posts the announcement, and tells you a week later how it's doing.
+You talk to your agent: *"The interview with Ada is ready in Descript. Prep it."* The agent stages the episode, drafts titles and show notes in your show's voice, and stops. You approve. The agent publishes, uploads the video, sets the thumbnail, posts the announcement, drafts copies of the companion blog post on dev.to and Substack (your site stays the original), and tells you a week later how it's doing.
 
 ```mermaid
 flowchart LR
@@ -95,14 +95,14 @@ flowchart TB
 
     subgraph ENGINE["Engine: show-neutral Python"]
         CORE[core: catalog, storage, feed, site, doctor]
-        IO[importers and exporters: RSS, Descript, YouTube, X]
+        IO[importers and exporters: RSS, Descript, YouTube, X, dev.to, Substack]
         MET[metrics: OP3, Cloudflare, X, YouTube]
     end
 
     subgraph OWNED["Services you own"]
         R2[(Cloudflare R2 on your domain)]
         WEB[your website repo]
-        PLAT[YouTube and X accounts]
+        PLAT[YouTube, X, dev.to, and Substack accounts]
         HF[(private Hugging Face backup)]
     end
 
@@ -154,8 +154,10 @@ Every public action is logged, and metrics only count what the engine itself put
 flowchart LR
     P[published episode] --> V[YouTube upload and thumbnail]
     P --> X[X post]
+    P --> DT[dev.to and Substack blog drafts]
     V --> L[(logs in DATA_DIR/social)]
     X --> L
+    DT --> L
     L --> C[daily collectors: OP3, Cloudflare, X, YouTube]
     C --> M[(metrics.db)]
     M --> D[offline dashboard and metrics tools]
@@ -170,7 +172,7 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 | :--- | :--- | :--- |
 | Read-only | run without asking | `podcast_status`, `podcast_inspect`, `podcast_list_episodes`, `podcast_get_episode`, `podcast_draft_social`, `podcast_metrics_summary`, `podcast_episode_metrics` |
 | Local files | run without asking | `podcast_stage_thumbnail`, `podcast_render_thumbnail`, `podcast_metrics_report`, `podcast_create_blog` |
-| Outside services, additive | run, safe to retry | `podcast_stage_from_descript`, `podcast_rebuild_feed`, `podcast_upload_media_asset`, `podcast_metrics_collect`, `podcast_backup` |
+| Outside services, additive | run, safe to retry | `podcast_stage_from_descript`, `podcast_rebuild_feed`, `podcast_upload_media_asset`, `podcast_crosspost_to_devto` and `podcast_crosspost_to_substack` (unpublished drafts only), `podcast_metrics_collect`, `podcast_backup` |
 | Public edit | ask you first; safe to retry | `podcast_update_episode`, `podcast_deploy_site`, `podcast_set_youtube_thumbnail` |
 | Public release | ask you first; never repeat blindly | `podcast_publish`, `podcast_publish_to_youtube`, `podcast_post_to_x` |
 
@@ -190,6 +192,7 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 - **Two site modes:** `none` serves the feed from your R2 domain, with no website needed. `astro` writes one Markdown page per episode into your site repo and pushes only those files.
 - **Migration:** a GUID-preserving importer for any host's RSS feed, with audio mirrored into R2.
 - **Agent surface:** MCP tools covering staging (including Descript), publishing, episode edits, deploys, backups, blog posts, social drafts and X posts, media uploads, YouTube uploads and thumbnails, and audience metrics. Each tool carries MCP safety annotations (read-only, destructive, idempotent), and the server sends its operating rules to every client on connect.
+- **Blog cross-posting:** your site keeps the original; the companion blog post goes to dev.to and Substack as unpublished drafts, with site-relative links made absolute. dev.to drafts carry a canonical URL back to your site; Substack has no canonical setting, so its drafts open with an "Originally published at" link. You publish each one on its platform.
 - **YouTube thumbnails:** your agent renders the art; the engine sets the headline in your show's fonts and colors (auto-fitted, clear of the duration badge, under 2 MB) and pushes it to YouTube after approval.
 - **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X and YouTube engagement for the show's own posts and videos, or your own) feed a local SQLite store, an offline HTML dashboard, and MCP tools agents can query.
 - **Safety:** see the list below; checks run before any upload.
@@ -218,6 +221,8 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 | :--- | :--- | :--- |
 | [Descript](https://www.descript.com) | Staging episodes straight from a Descript export (chapters from markers) | Export the transcript as Markdown; see ADOPTING. |
 | X developer app + [xurl](https://github.com/xdevplatform/xurl) | `podcast_post_to_x` and X metrics for those posts | An app in the [X developer portal](https://developer.x.com) (read and write, OAuth 2.0); X bills API use. Steps in ADOPTING. |
+| [dev.to](https://dev.to) API key | `podcast_crosspost_to_devto`: companion blog posts as dev.to drafts | Generate a key under dev.to → Settings → Extensions; needs a website (`SITE_MODE=astro`) for the canonical URL. Steps in ADOPTING. |
+| A [Substack](https://substack.com) publication | `podcast_crosspost_to_substack`: companion blog posts as Substack drafts | Substack has no official publishing API: this uses the community [python-substack](https://github.com/ma2za/python-substack) library and your browser session cookie, which controls the whole account and expires. Steps in ADOPTING. For episodes, Substack's own *Distribute to Substack* reads your feed, no engine changes needed. |
 | YouTube Data + Analytics APIs | `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, and YouTube metrics for the show's videos | A Google Cloud OAuth client ([Data API](https://developers.google.com/youtube/v3), [Analytics API](https://developers.google.com/youtube/analytics)). Custom thumbnails need a phone-verified channel. |
 | An image model your agent can call | Thumbnail art (the engine only sets the text) | Whatever your agent supports (e.g. via its own MCP or API tools); put fonts and colors in `DATA_DIR/templates/thumbnail_style.json`. |
 | [OP3](https://op3.dev) | Free, open download analytics (stats are public) | `USE_OP3_PREFIX=true` and a free API key. |
@@ -251,6 +256,7 @@ Every setting is documented inline in [`.env.example`](./.env.example).
 | Show data | `DATA_DIR` (catalog, transcripts, templates, playbook, backups) |
 | Integrations (optional) | `DESCRIPT_API_BEARER`, `YOUTUBE_TOKEN_PATH`, `HF_BACKUP_REPO`, `THUMBNAIL_STYLE`, `DEFAULT_TAGS`, `PODCAST_GUID` |
 | X posting (optional) | `X_USERNAME`, `XURL_APP`, `XURL_PATH` (tokens stay in xurl's own auth file) |
+| Blog cross-posting (optional) | `BLOG_URL_TEMPLATE` (your blog post URL with `{slug}`), `DEVTO_API_KEY`, `SUBSTACK_PUBLICATION_URL`, `SUBSTACK_COOKIES_PATH` (cookie file written by `python -m exporters.substack_post login`) |
 | Metrics (optional) | `OP3_API_TOKEN`, `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID`, X via the posting setup (or `X_BEARER_TOKEN`), `X_LOOKBACK_DAYS`, YouTube via `YOUTUBE_TOKEN_PATH` (+ `$DATA_DIR/youtube_videos.json`), `METRICS_SOURCES`, `METRICS_EXTRA_COLLECTORS`, `METRICS_BACKFILL_DAYS` |
 
 There are no show values in the code: startup fails and lists any required variable that's missing. `PODCAST_SERVER_ENV_FILE=/path/to/show.env` selects a different config (one per show).
@@ -264,7 +270,7 @@ my-show-data/
 ├── PLAYBOOK.md               # your editorial voice, title rules, workflows (agents read this first)
 ├── DEPLOYMENT.md             # your infrastructure record: DNS, R2, website, backups, credential locations
 ├── templates/                # social_long.txt, social_short.txt, thumbnail_style.json, fonts/
-├── social/                   # logs: x_posts.jsonl, youtube_uploads.jsonl, youtube_thumbnails.jsonl
+├── social/                   # logs: x_posts.jsonl, devto_posts.jsonl, substack_posts.jsonl, youtube_uploads.jsonl, youtube_thumbnails.jsonl
 ├── youtube_videos.json       # optional: back-catalog videos → episodes, for YouTube metrics
 ├── thumbnails/               # staged art and rendered thumbnails
 ├── excluded_episodes.json    # episodes that must never be (re)published
@@ -295,7 +301,7 @@ Agents should read [`AGENTS.md`](./AGENTS.md) and then your `PLAYBOOK.md`.
 | Catalog | `podcast_status`, `podcast_list_episodes`, `podcast_get_episode`, `podcast_inspect` |
 | Publishing | `podcast_stage_from_descript`, `podcast_publish`, `podcast_update_episode`, `podcast_rebuild_feed`, `podcast_deploy_site`, `podcast_backup` |
 | Content | `podcast_create_blog`, `podcast_draft_social`, `podcast_stage_thumbnail`, `podcast_render_thumbnail` |
-| Distribution | `podcast_upload_media_asset`, `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, `podcast_post_to_x` |
+| Distribution | `podcast_upload_media_asset`, `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, `podcast_post_to_x`, `podcast_crosspost_to_devto`, `podcast_crosspost_to_substack` |
 | Metrics | `podcast_metrics_collect`, `podcast_metrics_summary`, `podcast_episode_metrics`, `podcast_metrics_report` |
 
 ## Common Commands
@@ -307,6 +313,7 @@ Agents should read [`AGENTS.md`](./AGENTS.md) and then your `PLAYBOOK.md`.
 | Import a back catalog | `uv run python -m importers.rss <feed-url> --mirror` |
 | Back up | `podcast_backup` tool (runs in the background), or `uv run python scripts/backup_to_hf.py` |
 | Collect metrics + write the dashboard | `uv run python -m metrics.collect --report` (schedule `bin/collect-metrics.sh` daily) |
+| Connect or reconnect Substack (session cookie) | `uv run python -m exporters.substack_post login` |
 | Run tests | `uv run python -m unittest discover -s tests` |
 
 ## Safety Guarantees
@@ -317,7 +324,9 @@ The engine refuses to:
 - **Publish unrelated website work**: deploys commit only generated files, only from `WEBSITE_BRANCH`.
 - **Publish broken downloads**: episodes whose audio isn't in R2 are left out of the feed and pages.
 - **Upload arbitrary files** to the public bucket, or overwrite existing (immutably cached) objects.
-- **Leak credentials**: downloads are https-only, the Descript token is sent only to Descript hosts, and X and YouTube tokens stay in their own CLIs' or OAuth files.
+- **Leak credentials**: downloads are https-only, the Descript token is sent only to Descript hosts, the dev.to key only to dev.to, the Substack session cookie stays in its own 0600 file (the doctor fails if others can read it), and X and YouTube tokens stay in their own CLIs' or OAuth files.
+- **Publish cross-posts for you**: dev.to and Substack copies are created as unpublished drafts (Substack never emails subscribers from the engine), and a blog post that already has a draft (logged, or found on the account) is never sent again.
+- **Upload local files to Substack**: Substack drafts accept only https images, because the library would otherwise upload any image path found on disk.
 - **Attach arbitrary files**: X media and YouTube thumbnails accept only image/video types within each platform's size limits, checked before any upload.
 - **Lose track of public actions**: every X post, YouTube upload, and thumbnail change is logged as soon as it succeeds, so an agent can check before retrying instead of posting twice.
 
@@ -331,6 +340,8 @@ The engine refuses to:
 | Backup re-downloads audio every run | Catalog byte lengths don't match R2; sizes must come from the stored object (the importer's `--mirror` records them). |
 | `core.doctor`: domain resolves publicly but not locally | Your resolver cached an old "no such host" answer; it clears on its own. |
 | Doctor says a metrics source is ready, but collection fails | The doctor checks settings, not live access. The run's message says what to fix, e.g. Cloudflare `does not have permission ... zone.analytics.read` (add a token policy scoped to the zone/domain with Analytics Read) or YouTube `API has not been used in project ...` (enable YouTube Analytics API in that Cloud project). |
+| `podcast_crosspost_to_substack`: "Substack sign-in failed" | The session cookie expired or you signed out of Substack. Run `uv run python -m exporters.substack_post login` with a fresh cookie value. Any other Substack error may mean its private API changed; check for a newer python-substack release. |
+| `podcast_crosspost_to_devto` or `_substack` returns `exists` | A draft of that post is already there (logged, or found on the account). To make a fresh one, delete the old draft and remove the slug's line from `$DATA_DIR/social/devto_posts.jsonl` or `substack_posts.jsonl`. |
 | `podcast_set_youtube_thumbnail` returns 403 | Custom thumbnails aren't enabled for the channel; verify it in YouTube Studio (phone verification). |
 
 ---
@@ -342,7 +353,7 @@ podcast_server/
 ├── core/                  # config, catalog (db), R2 storage, feed XML, site output + deploy, doctor, thumbnail renderer, helpers
 ├── mcp_server/server.py   # the MCP tools, their annotations, and the connection instructions
 ├── importers/             # rss.py (any host, GUID-preserving), descript.py (staging)
-├── exporters/             # Astro pages, blog posts, social drafts, X posting, YouTube upload + thumbnails
+├── exporters/             # Astro pages, blog posts, social drafts, X posting, dev.to and Substack drafts, YouTube upload + thumbnails
 ├── metrics/               # collectors (OP3, Cloudflare, X, YouTube, plugins), store, analysis, dashboard
 ├── bin/                   # run-mcp.sh (MCP launcher), collect-metrics.sh (scheduler entry)
 ├── scripts/backup_to_hf.py

@@ -664,6 +664,16 @@ class AnalysisAndReportTests(TempDirTestCase):
         self.assertNotIn("<script>", data_block)
         self.assertEqual(json.loads(data_block)["items"][0]["rows"][0]["label"], "</script><script>alert(1)</script>")
 
+    def test_report_is_self_contained(self) -> None:
+        """The font is embedded and nothing is fetched: no external stylesheets, scripts, or font URLs."""
+        from metrics.report import FONT_PLACEHOLDER, write_report
+
+        html = write_report(days=30, path=self.tmp / "dash.html").read_text()
+        self.assertIn("url(data:font/woff2;base64,", html)
+        self.assertNotIn(FONT_PLACEHOLDER, html)
+        for external in ("<link", 'src="http', "url(http", "@import"):
+            self.assertNotIn(external, html)
+
 
 if __name__ == "__main__":
     unittest.main()
