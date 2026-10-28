@@ -64,6 +64,7 @@ Keep `DATA_DIR` outside this checkout, ideally in its own private repo. [`exampl
 ```
 my-show-data/
 ├── PLAYBOOK.md               # your editorial voice, title rules, workflows (agents read this first)
+├── DEPLOYMENT.md             # your infrastructure record: DNS, R2, website, backups, credential locations
 ├── templates/                # social_long.txt, social_short.txt
 ├── excluded_episodes.json    # episodes that must never be (re)published
 ├── transcripts/              # <slug>.txt

@@ -66,7 +66,7 @@ cp -r examples/show-data ~/my-show-data && (cd ~/my-show-data && git init)   # m
 echo "DATA_DIR=$HOME/my-show-data" >> .env
 ```
 
-`DATA_DIR` holds the catalog (`catalog.db`, created on first run), your **`PLAYBOOK.md`** (voice, title rules, review checklist, workflows), social templates, the exclusion list, transcripts, and backup staging. The template's `.gitignore` keeps the catalog and audio out of git.
+`DATA_DIR` holds the catalog (`catalog.db`, created on first run), your **`PLAYBOOK.md`** (voice, title rules, review checklist, workflows), your **`DEPLOYMENT.md`** (a record of your DNS, R2, website, backups, and where credentials live; fill it in as you go through these steps), social templates, the exclusion list, transcripts, and backup staging. The template's `.gitignore` keeps the catalog and audio out of git.
 
 **Verify everything:**
 

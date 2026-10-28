@@ -6,7 +6,7 @@ How AI coding and operations agents (Claude Desktop, Cursor, Codex, or your own)
 
 ## 1. Read the Show Playbook First
 
-Each show keeps a private playbook at **`$DATA_DIR/PLAYBOOK.md`** (see `examples/show-data/PLAYBOOK.md` for the template). It defines the show's editorial voice, title and show-notes standards, review checklist, custom workflows, and deployment details. **When it exists, read it before any podcast task and follow it.** If it conflicts with this file on something show-specific, the playbook wins; on the safety invariants in section 6, this file wins.
+Each show keeps a private playbook at **`$DATA_DIR/PLAYBOOK.md`** (see `examples/show-data/PLAYBOOK.md` for the template). It defines the show's editorial voice, title and show-notes standards, review checklist, and custom workflows. Infrastructure details (DNS, R2, website wiring, backups, credential locations) are in **`$DATA_DIR/DEPLOYMENT.md`**; read it before changing any infrastructure, and update it afterwards. **When it exists, read it before any podcast task and follow it.** If it conflicts with this file on something show-specific, the playbook wins; on the safety invariants in section 6, this file wins.
 
 Never copy playbook content, show data, or show-specific values into this repository.
 

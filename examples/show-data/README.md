@@ -10,6 +10,7 @@ echo "DATA_DIR=$HOME/my-show-data" >> /path/to/podcast_server/.env
 | File | Purpose |
 | :--- | :--- |
 | `PLAYBOOK.md` | Your editorial voice, title rules, review checklist, and workflows. Agents read it first. |
+| `DEPLOYMENT.md` | Your infrastructure record: DNS (including email records), R2, website wiring, backups, where credentials live, pending items. Fill it in as you set things up. |
 | `templates/social_*.txt` | Social post templates (`{hook}`, `{specs}`, `{guest_name}`, `{link}`, `{title}`) |
 | `excluded_episodes.json` | Slugs/GUIDs that must never be (re)published. Delete the example entry. |
 | `transcripts/` | `<slug>.txt` transcripts |

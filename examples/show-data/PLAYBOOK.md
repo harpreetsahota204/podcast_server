@@ -59,13 +59,9 @@ Never publish without explicit approval.
 - **Video:** <YouTube privacy default, description format, chapters>
 - **Thumbnails:** <visual style; also set THUMBNAIL_STYLE in .env>
 
-## 8. Deployment Notes
+## 8. Deployment
 
-- **Feed URL:** <PODCAST_FEED_URL>
-- **Audio domain:** <R2_PUBLIC_DOMAIN>
-- **Website:** <SITE_MODE and repo, if astro>
-- **Backups:** <HF_BACKUP_REPO, cadence>
-- **DNS / email cautions:** <records that must never change>
+Infrastructure details (DNS, R2, website wiring, backups, credentials) live in `DEPLOYMENT.md` next to this file. Keep this playbook about voice and process.
 
 ## 9. Show-Specific Rules
 
