@@ -15,7 +15,7 @@ This guide takes you from a fresh clone to a live feed that Apple Podcasts and S
 You need:
 
 - **A domain whose DNS is on Cloudflare** (the free plan works). R2 custom domains only work on Cloudflare-managed zones.
-- **Python 3.11+** and git.
+- **[uv](https://docs.astral.sh/uv/)** (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and git. uv installs the right Python (3.11+) for you.
 - **Cover art**: a square JPEG or PNG, 1400–3000 px, hosted at a public URL. Apple rejects feeds whose artwork doesn't load.
 - **Optional:** a website that deploys from git (Netlify, Vercel, Cloudflare Pages) if you want an episode page per episode.
 
@@ -42,7 +42,7 @@ Then make two choices:
 
 ```bash
 git clone <this repo> podcast_server && cd podcast_server
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # python3 must be 3.11+
+uv sync                               # creates .venv with locked dependencies
 cp .env.example .env && chmod 600 .env
 ```
 
@@ -71,7 +71,7 @@ echo "DATA_DIR=$HOME/my-show-data" >> .env
 **Verify everything:**
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m core.doctor
+uv run python -m core.doctor
 ```
 
 It checks your R2 credentials, that the audio domain resolves, the website or feed hosting setup, the cover art, and the feed URL, and prints the fix for anything that fails. (`Feed URL` warns until your first publish; that's expected.)
@@ -102,7 +102,7 @@ Ask the agent: *"Episode 1 is ready at `~/recordings/ep1.mp3`. Prep it."* It ins
 No agent? Call the tool function directly:
 
 ```bash
-PYTHONPATH=. .venv/bin/python -c "
+uv run python -c "
 from mcp_server.server import podcast_publish
 print(podcast_publish(audio_file_path='ep1.mp3', title='Episode 1: ...', description='One-line summary',
                       show_notes_markdown='### Chapters\n\n- **00:00** — Intro', slug='episode-1'))"
@@ -117,7 +117,7 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
 1. **Import and mirror the audio**:
 
    ```bash
-   PYTHONPATH=. .venv/bin/python -m importers.rss https://old-host.example/feed.rss --mirror
+   uv run python -m importers.rss https://old-host.example/feed.rss --mirror
    ```
 
    This copies every MP3 into your bucket and records the byte length R2 actually stores, since old hosts often report lengths a few hundred bytes off. Re-running it is safe: existing episodes are never overwritten. Episodes whose audio hasn't been mirrored are kept out of the public feed automatically.
@@ -137,9 +137,9 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
 | Task | How |
 | :--- | :--- |
 | Publish | Agent: `podcast_stage_from_descript` or `podcast_inspect` → your approval → `podcast_publish` |
-| Rebuild the feed (and pages) | `podcast_rebuild_feed` tool, or `PYTHONPATH=. .venv/bin/python -m core.site` |
-| Back up | Set `HF_BACKUP_REPO`, run `hf auth login` once, then `PYTHONPATH=. .venv/bin/python scripts/backup_to_hf.py` after each publish. It mirrors every MP3, a catalog snapshot, and your show assets to a **private** Hugging Face dataset, uploading only what changed. |
-| Re-check setup | `PYTHONPATH=. .venv/bin/python -m core.doctor` |
+| Rebuild the feed (and pages) | `podcast_rebuild_feed` tool, or `uv run python -m core.site` |
+| Back up | Set `HF_BACKUP_REPO`, run `hf auth login` once, then `uv run python scripts/backup_to_hf.py` after each publish. It mirrors every MP3, a catalog snapshot, and your show assets to a **private** Hugging Face dataset, uploading only what changed. |
+| Re-check setup | `uv run python -m core.doctor` |
 
 ## Customizing
 

@@ -12,7 +12,7 @@ uploads so only new or changed data is sent. Requires `hf auth login` and
 HF_BACKUP_REPO in .env.
 
 Usage:
-    PYTHONPATH=. .venv/bin/python scripts/backup_to_hf.py [--steps sync upload] [--repo-id user/name]
+    uv run python scripts/backup_to_hf.py [--steps sync upload] [--repo-id user/name]
 """
 
 import argparse

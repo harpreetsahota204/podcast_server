@@ -1,7 +1,7 @@
 """Stdlib unittest suite for the podcast engine's pure logic and safety guards.
 
 Run from the repo root:
-    PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -v
+    uv run python -m unittest discover -s tests -v
 
 Every test points settings at temp directories, so the real catalog, website
 repo, and R2 bucket are never touched.
@@ -233,6 +233,24 @@ class CatalogTests(unittest.TestCase):
         for i in range(3):
             self.db.insert_episode(make_episode(slug=f"ep-{i}", guid=f"g{i}", published_at=f"2026-01-0{i + 1}"))
         self.assertEqual([e["slug"] for e in self.db.list_episodes()], ["ep-2", "ep-1", "ep-0"])
+
+
+class StorageConfigTests(unittest.TestCase):
+    """A placeholder or malformed R2 account id must degrade to "not configured", not crash."""
+
+    def test_placeholder_account_id_reports_instead_of_raising(self) -> None:
+        """podcast_status and the doctor rely on this to report setup problems."""
+        from core.storage import R2StorageClient
+
+        saved = (settings.r2_account_id, settings.r2_access_key_id, settings.r2_secret_access_key)
+        settings.r2_account_id, settings.r2_access_key_id, settings.r2_secret_access_key = (
+            "your_cloudflare_account_id", "key", "secret")
+        try:
+            client = R2StorageClient()
+        finally:
+            settings.r2_account_id, settings.r2_access_key_id, settings.r2_secret_access_key = saved
+        self.assertFalse(client.is_configured())
+        self.assertIn("R2_ACCOUNT_ID looks invalid", client.config_error)
 
 
 class FeedAndExportTests(unittest.TestCase):

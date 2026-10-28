@@ -34,11 +34,12 @@ flowchart LR
 ## Quick Start
 
 ```bash
+# needs uv: https://docs.astral.sh/uv/  (curl -LsSf https://astral.sh/uv/install.sh | sh)
 git clone <this repo> podcast_server && cd podcast_server
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python 3.11+
+uv sync                                       # creates .venv with Python 3.11+ and locked dependencies
 cp .env.example .env && chmod 600 .env       # fill in your show's values
-PYTHONPATH=. .venv/bin/python -m core.doctor  # verifies R2, domain, site, artwork, feed
-PYTHONPATH=. .venv/bin/python -m unittest discover -s tests
+uv run python -m core.doctor  # verifies R2, domain, site, artwork, feed
+uv run python -m unittest discover -s tests
 ```
 
 [`ADOPTING.md`](./ADOPTING.md) covers Cloudflare setup, configuration, first publish, and migration in detail.
@@ -98,11 +99,11 @@ Agents should read [`AGENTS.md`](./AGENTS.md) and then your `PLAYBOOK.md`.
 
 | Task | Command |
 | :--- | :--- |
-| Check the setup | `PYTHONPATH=. .venv/bin/python -m core.doctor` |
-| Rebuild feed (+ pages), no deploy | `PYTHONPATH=. .venv/bin/python -m core.site` |
-| Import a back catalog | `PYTHONPATH=. .venv/bin/python -m importers.rss <feed-url> --mirror` |
-| Back up | `PYTHONPATH=. .venv/bin/python scripts/backup_to_hf.py` |
-| Run tests | `PYTHONPATH=. .venv/bin/python -m unittest discover -s tests` |
+| Check the setup | `uv run python -m core.doctor` |
+| Rebuild feed (+ pages), no deploy | `uv run python -m core.site` |
+| Import a back catalog | `uv run python -m importers.rss <feed-url> --mirror` |
+| Back up | `uv run python scripts/backup_to_hf.py` |
+| Run tests | `uv run python -m unittest discover -s tests` |
 
 ## Safety Guarantees
 
@@ -137,6 +138,7 @@ podcast_server/
 ├── scripts/backup_to_hf.py
 ├── examples/show-data/    # template for your private DATA_DIR
 ├── tests/
+├── pyproject.toml / uv.lock  # uv project: dependencies + lockfile
 ├── ADOPTING.md            # run your own show
 ├── AGENTS.md              # operating guide for agents
 └── PLAN.md                # architecture and roadmap

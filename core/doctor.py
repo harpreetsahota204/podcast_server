@@ -1,7 +1,7 @@
 """Setup checker: verifies a show's configuration end to end before the first publish.
 
 Usage:
-    PYTHONPATH=. .venv/bin/python -m core.doctor
+    uv run python -m core.doctor
 
 Each check prints PASS, WARN, or FAIL with the fix. Exit code 1 if anything failed.
 Settings themselves are validated on import, so a missing required variable
@@ -26,7 +26,7 @@ def check_r2_credentials() -> Check:
     """The S3 API keys can reach the bucket."""
     client = R2StorageClient()
     if not client.is_configured():
-        return "FAIL", "R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are not all set."
+        return "FAIL", client.config_error or "R2 is not configured."
     try:
         client.s3_client.head_bucket(Bucket=settings.r2_bucket_name)
     except Exception as e:

@@ -12,13 +12,13 @@ Never copy playbook content, show data, or show-specific values into this reposi
 
 ## 2. Environment
 
-1. **Python:** use the checkout's virtualenv: `.venv/bin/python`.
-2. **Module path:** set `PYTHONPATH=.` when running scripts from the repo root.
+1. **Python:** this is a uv project. `uv sync` creates `.venv` from `uv.lock`; run everything with `uv run ...` from the repo root.
+2. **Dependencies:** add them with `uv add <package>` (or `uv add --dev <package>`), never with pip, so `pyproject.toml` and `uv.lock` stay in sync.
 3. **Configuration:** all show identity, domains, website layout, and data paths come from `.env` (template: `.env.example`). Read values in code through `from core.config import settings`, never by hardcoding paths or URLs.
 4. **Secrets:** `.env` is `chmod 600`. Never print, log, or commit its values.
 5. **MCP server:** `bin/run-mcp.sh` (stdio).
-6. **Health check:** `PYTHONPATH=. .venv/bin/python -m core.doctor`.
-7. **Tests:** `PYTHONPATH=. .venv/bin/python -m unittest discover -s tests` (uses a fake show; never touches real data).
+6. **Health check:** `uv run python -m core.doctor`.
+7. **Tests:** `uv run python -m unittest discover -s tests` (uses a fake show; never touches real data).
 
 ## 3. MCP Tools
 
@@ -50,18 +50,18 @@ Never copy playbook content, show data, or show-specific values into this reposi
 3. **Human review gate. Stop and present the package. Do not publish without explicit approval.**
 4. **Publish:** `podcast_publish(...)`. Check the response: `git_deploy.status` should be `pushed` (astro) or `not_applicable` (none mode, where the feed is live once uploaded). If it's `skipped` or `failed`, see section 5.
 5. **Verify:** the audio URL returns HTTP 206 for a range request, and `PODCAST_FEED_URL` returns 200 and lists the episode.
-6. **Back up:** `PYTHONPATH=. .venv/bin/python scripts/backup_to_hf.py` (if `HF_BACKUP_REPO` is set).
+6. **Back up:** `uv run python scripts/backup_to_hf.py` (if `HF_BACKUP_REPO` is set).
 
 ## 5. Common Operations
 
 - **Rewrite show notes:** update `content_markdown` in the catalog (never `guid`). A trigger clears any stale imported `content_html`. Then rebuild and deploy:
   ```bash
-  PYTHONPATH=. .venv/bin/python -m core.site
-  PYTHONPATH=. .venv/bin/python -c "from core.site import deploy_site; print(deploy_site('chore(podcast): update show notes'))"
+  uv run python -m core.site
+  uv run python -c "from core.site import deploy_site; print(deploy_site('chore(podcast): update show notes'))"
   ```
 - **Before bulk catalog edits,** back it up: `sqlite3 "$DATA_DIR/catalog.db" ".backup $DATA_DIR/catalog.db.bak_$(date +%Y%m%d_%H%M%S)"`.
 - **Deploy skipped or failed (astro mode):** switch the site repo to `WEBSITE_BRANCH`, then re-run `deploy_site(...)`. Never stage the site repo with `git add .`; only the generated paths (feed file, episode pages, blog post) may be committed.
-- **Import a back catalog:** `PYTHONPATH=. .venv/bin/python -m importers.rss <old-feed-url> --mirror`.
+- **Import a back catalog:** `uv run python -m importers.rss <old-feed-url> --mirror`.
 
 ## 6. Invariants (never violate)
 

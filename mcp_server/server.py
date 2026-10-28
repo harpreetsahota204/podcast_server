@@ -219,7 +219,7 @@ def podcast_publish(
     audio_meta = inspect_audio(audio_path)
     client = R2StorageClient()
     if not client.is_configured():
-        raise RuntimeError("Cloudflare R2 storage client is not configured in .env")
+        raise RuntimeError(client.config_error)
 
     target_filename = f"{ep_slug}.mp3"
     r2_url = client.upload_file(audio_path, f"episodes/{target_filename}")

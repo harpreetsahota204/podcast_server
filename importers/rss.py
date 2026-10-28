@@ -10,7 +10,7 @@ in the show's excluded_episodes.json are skipped. Only MP3 enclosures are
 imported, matching what the feed generator serves.
 
 Usage:
-    PYTHONPATH=. .venv/bin/python -m importers.rss <feed-url-or-file> [--mirror]
+    uv run python -m importers.rss <feed-url-or-file> [--mirror]
 
 --mirror copies each episode's audio from the old host into R2 and records the
 byte length R2 actually stores (hosts' reported lengths are often slightly off).
