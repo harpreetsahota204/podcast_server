@@ -79,6 +79,7 @@ def podcast_inspect(audio_path: str) -> dict[str, Any]:
 @mcp.tool()
 def podcast_list_episodes(limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
     """List episodes (newest first, max 200 per call) with publication date, duration, and audio sync status."""
+    # Clamp agent-supplied paging so one call can't dump the whole catalog (or pass a negative "no limit").
     with _open_catalog() as db:
         episodes = db.list_episodes(limit=max(1, min(limit, MAX_LIST_LIMIT)), offset=max(0, offset))
     return [

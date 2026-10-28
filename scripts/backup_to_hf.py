@@ -32,6 +32,11 @@ logger = logging.getLogger("backup_to_hf")
 UPLOAD_ORDER = ["catalog", "show", "audio"]
 
 
+def _upload_rank(folder: str) -> tuple[int, str]:
+    """Sort key: folders named in UPLOAD_ORDER first (in that order), then any others alphabetically."""
+    return (UPLOAD_ORDER.index(folder) if folder in UPLOAD_ORDER else len(UPLOAD_ORDER), folder)
+
+
 def _dataset_card() -> str:
     """README for the dataset, naming the show it belongs to."""
     return f"""---
@@ -96,8 +101,8 @@ def upload_to_hub(repo_id: str) -> None:
         raise RuntimeError(f"{repo_id} is public; make it private before uploading the archive.")
 
     api.upload_file(repo_id=repo_id, repo_type="dataset", path_or_fileobj=backup / "README.md", path_in_repo="README.md")
-    folders = sorted((p.name for p in backup.iterdir() if p.is_dir() and not p.name.startswith(".")),
-                     key=lambda name: (UPLOAD_ORDER.index(name) if name in UPLOAD_ORDER else len(UPLOAD_ORDER), name))
+    # Every top-level folder is uploaded, so extra archives placed in backup/ are included automatically.
+    folders = sorted((p.name for p in backup.iterdir() if p.is_dir() and not p.name.startswith(".")), key=_upload_rank)
     for folder in folders:
         api.upload_folder(
             repo_id=repo_id,

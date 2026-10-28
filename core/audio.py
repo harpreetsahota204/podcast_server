@@ -22,7 +22,9 @@ def inspect_audio(file_path: Path) -> dict[str, Any]:
     if not file_path.exists():
         raise FileNotFoundError(f"Audio file not found: {file_path}")
 
+    # The enclosure length must be the exact byte count served, so it comes from the file itself.
     size_bytes = file_path.stat().st_size
+    # mutagen reads frame headers only (no decoding), so this is fast even for multi-hour episodes.
     info = MP3(file_path).info
     duration_seconds = float(info.length)
 

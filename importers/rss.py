@@ -126,6 +126,7 @@ def import_feed(source: str, mirror: bool = False) -> dict[str, Any]:
     """Add the feed's episodes to the catalog (never overwriting), optionally mirroring audio into R2."""
     records, skipped = parse_feed(read_feed(source))
     with CatalogDB(settings.database_path) as db:
+        # Filter exclusions first: the database trigger would otherwise abort on them.
         allowed = [r for r in records if not db.is_excluded(r["slug"], r["guid"])]
         added = sum(db.insert_episode_if_new(r) for r in allowed)
         total = db.count_episodes()
@@ -138,6 +139,7 @@ def import_feed(source: str, mirror: bool = False) -> dict[str, Any]:
         "skipped_non_mp3": skipped,
         "catalog_total": total,
     }
+    # Mirroring runs after the insert so every new row (audio_synced=0) is picked up.
     if mirror:
         result["audio_mirrored"] = sync_episodes_audio()
     logger.info("Import result: %s", result)
