@@ -110,7 +110,7 @@ def _describe_rejection(exc: urllib.error.HTTPError) -> str:
     return detail
 
 
-def _call(
+def call_graph(
     path: str, access_token: str, payload: dict[str, Any] | None = None, method: str | None = None
 ) -> dict[str, Any]:
     """GET (or POST `payload` as JSON to, or send `method` such as DELETE to) a Graph API path and decode the reply.
@@ -133,9 +133,9 @@ def _call(
 
 
 def _call_or_empty(path: str, access_token: str) -> dict[str, Any]:
-    """Like `_call`, but any error yields an empty reply: for lookups whose failure is expected or harmless."""
+    """Like `call_graph`, but any error yields an empty reply: for lookups whose failure is expected or harmless."""
     try:
-        return _call(path, access_token)
+        return call_graph(path, access_token)
     except InstagramError:
         return {}
 
@@ -150,7 +150,7 @@ def reachable_accounts(access_token: str) -> list[dict[str, str]]:
     Raises InstagramError if Meta rejects the token itself.
     """
     # Checked first and allowed to raise: an invalid token must be reported as such, not as "no account".
-    _call("me?fields=id", access_token)
+    call_graph("me?fields=id", access_token)
     # Each lookup below only exists for one kind of token, so on the other kinds it fails and contributes nothing.
     shared = _call_or_empty("me/assigned_instagram_accounts?fields=id,username", access_token).get("data", [])
     linked = _call_or_empty(f"me?fields={PAGE_LINKED_ACCOUNT_FIELDS}", access_token).get("instagram_business_account")
@@ -265,7 +265,7 @@ def _wait_until_finished(container_id: str, access_token: str) -> None:
     """Poll a media container until Meta has fetched and processed it; raise if it fails or takes too long."""
     deadline = time.monotonic() + CONTAINER_TIMEOUT_SECONDS
     while True:
-        status = _call(f"{container_id}?fields=status_code,status", access_token)
+        status = call_graph(f"{container_id}?fields=status_code,status", access_token)
         code = status.get("status_code")
         if code == "FINISHED":
             return
@@ -281,10 +281,8 @@ def _wait_until_finished(container_id: str, access_token: str) -> None:
 
 def _logged_post(source_sha256: str, caption: str) -> dict[str, Any] | None:
     """The engine's record of an earlier post of this same image and caption, unless the engine has since deleted it."""
-    deleted = {record.get("media_id") for record in read_records(settings.instagram_deletion_log_path)}
-    for record in reversed(read_post_log()):
-        same = record.get("media_sha256") == source_sha256 and record.get("caption") == caption
-        if same and record["media_id"] not in deleted:
+    for record in reversed(live_post_log()):
+        if record.get("media_sha256") == source_sha256 and record.get("caption") == caption:
             return {"media_id": record["media_id"], "url": record.get("url")}
     return None
 
@@ -292,6 +290,12 @@ def _logged_post(source_sha256: str, caption: str) -> dict[str, Any] | None:
 def read_post_log() -> list[dict[str, Any]]:
     """Every Instagram post this engine published, oldest first; malformed lines (e.g. a torn write) are skipped."""
     return [r for r in read_records(settings.instagram_post_log_path) if r.get("media_id")]
+
+
+def live_post_log() -> list[dict[str, Any]]:
+    """The logged posts the engine hasn't since deleted, oldest first (posts deleted in the app can't be known)."""
+    deleted = {record.get("media_id") for record in read_records(settings.instagram_deletion_log_path)}
+    return [record for record in read_post_log() if record["media_id"] not in deleted]
 
 
 def post_to_instagram(
@@ -343,10 +347,10 @@ def post_to_instagram(
 
     # 4. Meta's two steps: a container from the public URL, then publishing it once it's processed.
     access_token = token["access_token"]
-    container = _call(f"{token['user_id']}/media", access_token, {"image_url": image_url, "caption": text})
+    container = call_graph(f"{token['user_id']}/media", access_token, {"image_url": image_url, "caption": text})
     _wait_until_finished(container["id"], access_token)
     try:
-        media_id = _call(f"{token['user_id']}/media_publish", access_token, {"creation_id": container["id"]})["id"]
+        media_id = call_graph(f"{token['user_id']}/media_publish", access_token, {"creation_id": container["id"]})["id"]
     except InstagramError as exc:
         # A timeout here leaves the outcome unknown, so the agent must look before posting again.
         raise InstagramError(f"{exc} The post may have gone through: check @{username} before retrying.") from exc
@@ -386,7 +390,7 @@ def list_posts(limit: int = 25, after: str | None = None) -> dict[str, Any]:
     """One page of the account's posts, newest first, and the cursor for the next page (None on the last one)."""
     token = load_token()
     query = {"fields": POST_FIELDS, "limit": max(1, min(limit, MAX_LIST_LIMIT)), **({"after": after} if after else {})}
-    page = _call(f"{token['user_id']}/media?{urlencode(query)}", token["access_token"])
+    page = call_graph(f"{token['user_id']}/media?{urlencode(query)}", token["access_token"])
     # Meta includes a `next` link only when another page exists; the cursor alone is enough to ask for it.
     paging = page.get("paging", {})
     return {
@@ -405,7 +409,7 @@ def delete_post(media_id: str, dry_run: bool = False) -> dict[str, Any]:
     if not _MEDIA_ID_RE.fullmatch(media_id):
         raise ValueError(f"{media_id!r} isn't an Instagram media id (digits only).")
     token = load_token()
-    post = _call(f"{media_id}?fields={POST_FIELDS}", token["access_token"])
+    post = call_graph(f"{media_id}?fields={POST_FIELDS}", token["access_token"])
     owner = str(post.get("username") or "")
     if owner.lower() != token["username"].lower():
         raise InstagramError(
@@ -416,7 +420,7 @@ def delete_post(media_id: str, dry_run: bool = False) -> dict[str, Any]:
     if dry_run:
         return {"status": "dry_run", **summary}
 
-    reply = _call(media_id, token["access_token"], method="DELETE")
+    reply = call_graph(media_id, token["access_token"], method="DELETE")
     if not reply.get("success"):
         raise InstagramError(f"Instagram didn't confirm deleting post {media_id}: {reply}"[:MAX_ERROR_CHARS])
     result: dict[str, Any] = {"status": "deleted", **summary}

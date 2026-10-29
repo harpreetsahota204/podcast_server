@@ -29,7 +29,9 @@ from metrics.collect import OVERLAP_DAYS, plan_window, run_one
 from metrics.collectors.base import CollectionContext, CollectionWindow, Collector, CollectorError, fetch_json
 from metrics.collectors.cloudflare import CloudflareCollector, aggregate_traffic, classify_agent
 from metrics.collectors.op3 import OP3Collector, aggregate_downloads
+from exporters.instagram import InstagramError
 from exporters.x_post import XPostError
+from metrics.collectors.instagram import InstagramCollector
 from metrics.collectors.x import BearerTransport, XCollector, XurlTransport, post_records
 from metrics.episodes import EpisodeIndex
 from metrics.models import ACCOUNT, EPISODE, POST, CollectionResult, Entity, MetricSpec, Observation
@@ -476,6 +478,120 @@ class CrosspostCollectorTests(TempDirTestCase):
             SubstackCollector().collect(make_ctx())
 
 
+class FakeGraph:
+    """Stands in for `call_graph`: canned replies keyed by path (before `?`), unknown paths refused like Meta does."""
+
+    def __init__(self, replies: dict[str, dict[str, Any] | Exception]) -> None:
+        """`replies` maps a Graph path to its reply, or to the exception the call should raise."""
+        self.replies = replies
+        self.paths: list[str] = []
+
+    def __call__(self, path: str, access_token: str) -> dict[str, Any]:
+        """Record the path and answer it."""
+        self.paths.append(path)
+        reply = self.replies.get(path.split("?", 1)[0], InstagramError("Instagram HTTP 400: Unsupported get request."))
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+class InstagramCollectorTests(TempDirTestCase):
+    """Only live posts in the engine's post log are measured; insights are added when the token allows them."""
+
+    TOKEN = {"user_id": "17841", "username": "show", "access_token": "TOKEN"}
+    ACCOUNT = {"username": "show", "followers_count": 250, "follows_count": 12, "media_count": 40}
+    POST = {"timestamp": "2026-03-09T12:00:00+0000", "permalink": "https://www.instagram.com/p/abc/",
+            "caption": "New episode\nout now", "media_product_type": "FEED", "like_count": 5, "comments_count": 1}
+    # Both reply shapes Meta uses: `total_value` (newer metrics) and `values` (older ones).
+    INSIGHTS = {"data": [{"name": "views", "total_value": {"value": 120}},
+                         {"name": "reach", "values": [{"value": 90}]},
+                         {"name": "saved", "total_value": {"value": 3}}]}
+
+    def setUp(self) -> None:
+        """Point the post and deletion logs into the temp dir."""
+        super().setUp()
+        self._saved_data_dir = settings.data_dir
+        settings.data_dir = self.tmp
+
+    def tearDown(self) -> None:
+        """Restore the data dir."""
+        settings.data_dir = self._saved_data_dir
+        super().tearDown()
+
+    @staticmethod
+    def write_log(path: Path, *records: dict[str, Any]) -> None:
+        """Write log lines the way the Instagram tools do."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(r) + "\n" for r in records))
+
+    def collect(self, graph: FakeGraph) -> CollectionResult:
+        """Run the collector with the saved token and Graph API replaced by test doubles."""
+        with mock.patch("metrics.collectors.instagram.load_token", return_value=self.TOKEN), \
+                mock.patch("metrics.collectors.instagram.call_graph", graph):
+            return InstagramCollector().collect(make_ctx())
+
+    def test_collect_reads_live_logged_posts(self) -> None:
+        """Deleted and duplicate log lines are skipped, a post gone in the app is counted, and insights are mapped."""
+        self.write_log(
+            settings.instagram_post_log_path,
+            {"media_id": "1", "posted_at": "2026-03-09T12:00:00+00:00", "episode_slug": "ep-a"},
+            {"media_id": "1", "posted_at": "2026-03-09T12:00:00+00:00", "episode_slug": "ep-a"},
+            {"media_id": "2", "posted_at": "2026-03-08T12:00:00+00:00"},
+            {"media_id": "3", "posted_at": "2026-03-07T12:00:00+00:00", "episode_slug": "not-in-catalog"},
+        )
+        self.write_log(settings.instagram_deletion_log_path, {"media_id": "2"})
+        graph = FakeGraph({"17841": self.ACCOUNT, "1": self.POST, "1/insights": self.INSIGHTS})
+        result = self.collect(graph)
+
+        self.assertEqual([p.split("?", 1)[0] for p in graph.paths], ["17841", "1", "1/insights", "3"])
+        post = next(e for e in result.entities if e.entity_type == POST)
+        self.assertEqual((post.entity_id, post.episode_slug, post.label), ("1", "ep-a", "New episode out now"))
+        self.assertEqual(post.url, "https://www.instagram.com/p/abc/")
+        values = {o.metric: o.value for o in result.observations if o.entity_type == POST}
+        self.assertEqual(values, {"likes": 5, "comments": 1, "views": 120, "reach": 90, "saves": 3})
+        self.assertTrue(all(o.granularity == "snapshot" for o in result.observations))
+        account = {o.metric: o.value for o in result.observations if o.entity_type == ACCOUNT}
+        self.assertEqual(account, {"followers": 250, "following": 12, "posts": 40})
+        self.assertEqual(result.notes[0], "1 of 2 logged posts read, 1 linked to an episode")
+        self.assertIn("1 posts Instagram couldn't return", result.notes[1])
+
+    def test_refused_insights_keep_basic_counts_and_stop(self) -> None:
+        """Without instagram_manage_insights, likes and comments are still recorded and insights are asked once."""
+        self.write_log(settings.instagram_post_log_path, {"media_id": "1"}, {"media_id": "4"})
+        refused = InstagramError("Instagram HTTP 403: (#10) Application does not have permission for this action")
+        graph = FakeGraph({"17841": self.ACCOUNT, "1": self.POST, "4": self.POST,
+                           "1/insights": refused, "4/insights": refused})
+        result = self.collect(graph)
+
+        self.assertEqual(sum(p.split("?", 1)[0].endswith("/insights") for p in graph.paths), 1)
+        self.assertEqual({o.metric for o in result.observations if o.entity_type == POST}, {"likes", "comments"})
+        self.assertIn("instagram_manage_insights", result.notes[-1])
+
+    def test_no_logged_posts_reads_only_the_account(self) -> None:
+        """Without engine-published posts, the account's own posts are never read."""
+        graph = FakeGraph({"17841": self.ACCOUNT})
+        result = self.collect(graph)
+        self.assertEqual(len(graph.paths), 1)
+        self.assertEqual(result.notes, ["0 of 0 logged posts read, 0 linked to an episode"])
+
+    def test_invalid_token_fails_the_run(self) -> None:
+        """A rejected account lookup fails the source with Meta's message and the fix."""
+        graph = FakeGraph({"17841": InstagramError("Instagram HTTP 400: token invalid. Run login.")})
+        with self.assertRaisesRegex(CollectorError, "token invalid"):
+            self.collect(graph)
+
+    def test_config_problem_follows_the_saved_token(self) -> None:
+        """INSTAGRAM_USERNAME and a token saved for that account are both needed; no request is made."""
+        token_path = self.tmp / "instagram_token.json"
+        with mock.patch.object(settings, "instagram_username", None):
+            self.assertIn("INSTAGRAM_USERNAME", InstagramCollector().config_problem())
+        with mock.patch.object(settings, "instagram_username", "show"), \
+                mock.patch.object(settings, "instagram_token_path", token_path):
+            self.assertIn("No Instagram token", InstagramCollector().config_problem())
+            token_path.write_text(json.dumps(self.TOKEN))
+            self.assertIsNone(InstagramCollector().config_problem())
+
+
 class FetchJsonTests(unittest.TestCase):
     """Errors must be useful without exposing credentials."""
 
@@ -725,6 +841,41 @@ class AnalysisAndReportTests(TempDirTestCase):
         self.assertEqual(by_metric[("x", "impressions")]["current"], 80)
         self.assertEqual(summary["breakdowns"][0]["top"], [["Overcast", 4]])
 
+    def test_previous_window_needs_full_coverage(self) -> None:
+        """OP3 data starts Mar 2: a 30-day window has no comparable previous window; a 3-day one does."""
+        from metrics.analysis import summarize
+
+        def downloads(days: int) -> dict[str, Any]:
+            """The OP3 downloads headline for a window of `days`."""
+            return next(h for h in summarize(days=days, today=TODAY)["headlines"] if h["metric"] == "downloads")
+
+        self.assertIsNone(downloads(30)["previous"])
+        self.assertEqual((downloads(3)["current"], downloads(3)["previous"]), (0, 6))
+
+    def test_snapshot_trends_carry_readings_forward(self) -> None:
+        """A running total is seeded from readings before the window and empty before its first reading."""
+        from metrics.analysis import snapshot_trends
+        from metrics.registry import metric_specs
+
+        with MetricsStore(settings.metrics_db_path) as store:
+            trends = {t["key"]: dict(t["series"]) for t in snapshot_trends(store, metric_specs(), 30, TODAY)}
+        followers, impressions = trends["x.followers.account"], trends["x.impressions.post"]
+        self.assertEqual((followers["2026-02-09"], followers["2026-03-08"], followers["2026-03-10"]), (90, 90, 100))
+        self.assertIsNone(impressions["2026-03-08"])
+        self.assertEqual(impressions["2026-03-09"], 80)
+
+    def test_dashboard_data_links_numbers_to_series(self) -> None:
+        """Every number names its chart or trend; breakdowns and episodes carry daily values for the filters."""
+        from metrics.analysis import build_dashboard_data
+
+        data = build_dashboard_data(days=30, today=TODAY)
+        series = {c["key"] for c in data["charts"] + data["trends"]}
+        self.assertTrue(all(n["key"] in series for n in data["numbers"]))
+        self.assertEqual([p["source"] for p in data["platforms"]], ["op3", "x"])
+        mar6 = data["dates"].index("2026-03-06")
+        self.assertEqual(data["episode_daily"]["op3.downloads"]["ep-b"][mar6], 6)
+        self.assertEqual(data["breakdowns"][0]["daily"]["Overcast"][mar6], 4)
+
     def test_launch_column_only_when_data_covers_release(self) -> None:
         """ep-a was released before OP3 data starts, so its first-7-days value is unknown, not zero."""
         from metrics.analysis import episode_metrics, episode_table
@@ -748,12 +899,14 @@ class AnalysisAndReportTests(TempDirTestCase):
         self.assertEqual(json.loads(data_block)["items"][0]["rows"][0]["label"], "</script><script>alert(1)</script>")
 
     def test_report_is_self_contained(self) -> None:
-        """The font is embedded and nothing is fetched: no external stylesheets, scripts, or font URLs."""
-        from metrics.report import FONT_PLACEHOLDER, write_report
+        """The font and Chart.js are embedded and nothing is fetched: no external stylesheets, scripts, or font URLs."""
+        from metrics.report import CHARTJS_PLACEHOLDER, FONT_PLACEHOLDER, write_report
 
         html = write_report(days=30, path=self.tmp / "dash.html").read_text()
         self.assertIn("url(data:font/woff2;base64,", html)
+        self.assertIn("Chart.js v4.5.1", html)
         self.assertNotIn(FONT_PLACEHOLDER, html)
+        self.assertNotIn(CHARTJS_PLACEHOLDER, html)
         for external in ("<link", 'src="http', "url(http", "@import"):
             self.assertNotIn(external, html)
 

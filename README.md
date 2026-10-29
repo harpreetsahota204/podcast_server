@@ -96,7 +96,7 @@ flowchart TB
     subgraph ENGINE["Engine: show-neutral Python"]
         CORE[core: catalog, storage, feed, site, doctor]
         IO[importers and exporters: RSS, Descript, YouTube, X, Instagram, dev.to, Substack]
-        MET[metrics: OP3, Cloudflare, X, YouTube, dev.to, Substack]
+        MET[metrics: OP3, Cloudflare, X, Instagram, YouTube, dev.to, Substack]
     end
 
     subgraph OWNED["Services you own"]
@@ -160,7 +160,7 @@ flowchart LR
     X --> L
     IG --> L
     DT --> L
-    L --> C[daily collectors: OP3, Cloudflare, X, YouTube, dev.to, Substack]
+    L --> C[daily collectors: OP3, Cloudflare, X, Instagram, YouTube, dev.to, Substack]
     C --> M[(metrics.db)]
     M --> D[offline dashboard and metrics tools]
     D -->|"how is the show doing?"| AG([your agent])
@@ -199,7 +199,7 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 - **Content management:** agents can list what's on Instagram, YouTube, dev.to, and Substack and remove one item you named at a time: delete an Instagram post, YouTube video, or Substack post or draft (permanent), or unpublish a dev.to article back to draft (dev.to's API can't delete). Each removal checks the item is yours first, has a dry run, and is logged with what was removed.
 - **YouTube Shorts:** uploads that are square or vertical and up to 3 minutes become Shorts; with `expect_short`, the engine measures the clip first (ffprobe, rotation-aware) and refuses one that would land as a regular video.
 - **YouTube thumbnails:** your agent renders the art; the engine sets the headline in your show's fonts and colors (auto-fitted, clear of the duration badge, under 2 MB) and pushes it to YouTube after approval.
-- **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X and YouTube engagement for the show's own posts and videos, dev.to and Substack reach for the blog posts the engine cross-posted, or your own) feed a local SQLite store, an offline HTML dashboard, and MCP tools agents can query.
+- **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X, Instagram, and YouTube engagement for the show's own posts and videos, dev.to and Substack reach for the blog posts the engine cross-posted, or your own) feed a local SQLite store, an offline HTML dashboard (an overview plus a tab per platform with every collected number, filtered by range or a stretch you drag across the timeline), and MCP tools agents can query.
 - **Safety:** see the list below; checks run before any upload.
 - **Backups:** incremental, to a private Hugging Face dataset.
 
@@ -226,7 +226,7 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 | :--- | :--- | :--- |
 | [Descript](https://www.descript.com) | Staging episodes straight from a Descript export (chapters from markers) | Export the transcript as Markdown; see ADOPTING. |
 | X developer app + [xurl](https://github.com/xdevplatform/xurl) | `podcast_post_to_x` and X metrics for those posts | An app in the [X developer portal](https://developer.x.com) (read and write, OAuth 2.0); X bills API use. Steps in ADOPTING. |
-| Instagram professional account (Business or Creator) + a Meta app | `podcast_post_to_instagram`: image posts to the show's Instagram | A [Meta developer](https://developers.facebook.com) app; a never-expiring Page token for the Facebook Page linked to the account (or a Unified login token); your own account needs no App Review. Saved by `python -m exporters.instagram login`. Steps in ADOPTING. |
+| Instagram professional account (Business or Creator) + a Meta app | `podcast_post_to_instagram`: image posts to the show's Instagram, and metrics for those posts | A [Meta developer](https://developers.facebook.com) app; a never-expiring Page token for the Facebook Page linked to the account (or a Unified login token); your own account needs no App Review. Saved by `python -m exporters.instagram login`. Steps in ADOPTING. |
 | [dev.to](https://dev.to) API key | `podcast_crosspost_to_devto`: companion blog posts as dev.to drafts | Generate a key under dev.to → Settings → Extensions; needs a website (`SITE_MODE=astro`) for the canonical URL. Steps in ADOPTING. |
 | A [Substack](https://substack.com) publication | `podcast_crosspost_to_substack`: companion blog posts as Substack drafts | Substack has no official publishing API: this uses the community [python-substack](https://github.com/ma2za/python-substack) library and your browser session cookie, which controls the whole account and expires. Steps in ADOPTING. For episodes, Substack's own *Distribute to Substack* reads your feed, no engine changes needed. |
 | YouTube Data + Analytics APIs | `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, `podcast_list_youtube_videos` / `podcast_delete_youtube_video` (deleting needs the `youtube.force-ssl` scope), and YouTube metrics for the show's videos; ffmpeg's `ffprobe` for the optional Shorts check | A Google Cloud OAuth client ([Data API](https://developers.google.com/youtube/v3), [Analytics API](https://developers.google.com/youtube/analytics)). Custom thumbnails need a phone-verified channel. |
@@ -264,7 +264,7 @@ Every setting is documented inline in [`.env.example`](./.env.example).
 | X posting (optional) | `X_USERNAME`, `XURL_APP`, `XURL_PATH` (tokens stay in xurl's own auth file) |
 | Instagram posting (optional) | `INSTAGRAM_USERNAME`, `INSTAGRAM_TOKEN_PATH` (token file written by `python -m exporters.instagram login`) |
 | Blog cross-posting (optional) | `BLOG_URL_TEMPLATE` (your blog post URL with `{slug}`), `DEVTO_API_KEY`, `SUBSTACK_PUBLICATION_URL`, `SUBSTACK_COOKIES_PATH` (cookie file written by `python -m exporters.substack_post login`) |
-| Metrics (optional) | `OP3_API_TOKEN`, `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID`, X via the posting setup (or `X_BEARER_TOKEN`), `X_LOOKBACK_DAYS`, YouTube via `YOUTUBE_TOKEN_PATH` (+ `$DATA_DIR/youtube_videos.json`), dev.to and Substack via the cross-posting setup, `METRICS_SOURCES`, `METRICS_EXTRA_COLLECTORS`, `METRICS_BACKFILL_DAYS` |
+| Metrics (optional) | `OP3_API_TOKEN`, `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID`, X via the posting setup (or `X_BEARER_TOKEN`), `X_LOOKBACK_DAYS`, Instagram via the posting setup, YouTube via `YOUTUBE_TOKEN_PATH` (+ `$DATA_DIR/youtube_videos.json`), dev.to and Substack via the cross-posting setup, `METRICS_SOURCES`, `METRICS_EXTRA_COLLECTORS`, `METRICS_BACKFILL_DAYS` |
 
 There are no show values in the code: startup fails and lists any required variable that's missing. `PODCAST_SERVER_ENV_FILE=/path/to/show.env` selects a different config (one per show).
 
@@ -367,7 +367,7 @@ podcast_server/
 ├── mcp_server/server.py   # the MCP tools, their annotations, and the connection instructions
 ├── importers/             # rss.py (any host, GUID-preserving), descript.py (staging)
 ├── exporters/             # Astro pages, blog posts, social drafts, X and Instagram posting, dev.to and Substack drafts, YouTube upload + thumbnails
-├── metrics/               # collectors (OP3, Cloudflare, X, YouTube, dev.to, Substack, plugins), store, analysis, dashboard
+├── metrics/               # collectors (OP3, Cloudflare, X, Instagram, YouTube, dev.to, Substack, plugins), store, analysis, dashboard (Chart.js in vendor/)
 ├── bin/                   # run-mcp.sh (MCP launcher), collect-metrics.sh (scheduler entry)
 ├── scripts/backup_to_hf.py
 ├── examples/show-data/    # template for your private DATA_DIR

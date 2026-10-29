@@ -32,19 +32,20 @@ Podcast hosting services charge monthly for object storage, a database table, an
 | `core/credentials.py` | Credential files kept outside `.env` (Substack cookie, Instagram token): written 0600, checked by the doctor. |
 | `importers/` | `rss.py` (any host, GUID-preserving), `descript.py` (staging, chapters). |
 | `exporters/` | Astro Markdown pages, blog posts, social templates, X posting (via xurl), Instagram posting (Graph API, media staged on R2), dev.to and Substack drafts (shared loader: `blog_post.crosspost_source`), YouTube. |
-| `metrics/` | Audience metrics: `collectors/` (OP3, Cloudflare, X, YouTube, dev.to, Substack; plugins via `METRICS_EXTRA_COLLECTORS`), `store.py` (`metrics.db`), `analysis.py`, `report.py` (offline HTML dashboard), `collect.py` (CLI + scheduler entry). |
+| `metrics/` | Audience metrics: `collectors/` (OP3, Cloudflare, X, Instagram, YouTube, dev.to, Substack; plugins via `METRICS_EXTRA_COLLECTORS`), `store.py` (`metrics.db`), `analysis.py`, `report.py` (offline HTML dashboard), `collect.py` (CLI + scheduler entry). |
 
 ### Metrics Pipeline
 
 ```
 collectors ──► CollectionResult ──► MetricsStore ($DATA_DIR/metrics.db) ──► analysis ──► dashboard.html
-(op3, cloudflare, x, youtube,      (replace day window + upsert)            (generic)     + MCP tools
- devto, substack, plugins)
+(op3, cloudflare, x, instagram,    (replace day window + upsert)            (generic)     + MCP tools
+ youtube, devto, substack, plugins)
 ```
 
 - **Contract:** a collector subclasses `metrics.collectors.base.Collector`, declares `name`, `description`, and `metrics` (`MetricSpec` labels, `headline` flag), and implements `config_problem()` and `collect(ctx)`. The pipeline owns windows, storage, run logging, and failure isolation; analysis and the dashboard pick up new metrics automatically.
 - **Windows:** each source resumes from its last successful run minus 3 days of overlap (sources revise recent days), or backfills `METRICS_BACKFILL_DAYS` on its first run. Collectors clamp to their own retention (Cloudflare asks the API for the plan's limits).
 - **Episode matching:** `EpisodeIndex` resolves OP3 URLs, audio request paths, and episode page links to catalog slugs, accepting fallbacks only on the show's own hosts.
+- **Dashboard:** `analysis.build_dashboard_data` embeds every metric, not only headline ones: numbers keyed like their series (`source.metric.entity_type`), daily charts, daily levels of every snapshot metric (`snapshot_trends`, readings carried forward), and day-by-day breakdown and per-episode values so the page can total any range or stretch. `report.py` inlines the font and Chart.js 4.5.1 (`metrics/vendor/`, MIT), so the file stays offline. The page has an Overview tab and one tab per platform; the range and a measured stretch filter everything on every tab.
 
 ## Data Model
 
@@ -105,13 +106,15 @@ CREATE TABLE collection_runs (id, source, started_at, finished_at, status, windo
 | Setup doctor, HF backups, exclusion list | Done |
 | Audience metrics: OP3 / Cloudflare / X / YouTube collectors, plugin contract, dashboard, MCP tools | Done |
 | YouTube thumbnails: prompt staging, style-file renderer, setter with change log + dashboard markers | Done |
+| Dashboard: Overview plus a tab per platform, every collected metric (running totals as trends), Chart.js inlined offline, range and measured-stretch filters across every chart and table | Done |
 | Blog cross-posting to dev.to: unpublished drafts with canonical URL, log + duplicate check | Done |
 | Blog cross-posting to Substack: unpublished drafts via python-substack (private API), attribution line, https-only images, log + duplicate check | Done |
 | Metrics: dev.to and Substack collectors for cross-posted articles (from the cross-post logs) | Done |
 | Instagram posting (Page token or Unified login token): single-image feed posts (JPEG conversion, R2 staging, container publish, log + duplicate check) | Done |
 | YouTube Shorts check: `expect_short` measures the clip (ffprobe, rotation-aware) and refuses non-Shorts before upload | Done |
 | Content management: list and remove one owned item per call (dry run, removal log) on Instagram (delete), YouTube (delete), dev.to (unpublish; no API delete), and Substack (delete, private API) | Done |
-| Instagram: carousels, Stories, Reels (clips and audiograms), and an Instagram metrics collector | Planned |
+| Metrics: Instagram collector for engine-published posts (from the post log, minus deletions): followers, likes, comments, and with `instagram_manage_insights` views, reach, saves, shares, interactions | Done |
+| Instagram: carousels, Stories, Reels (clips and audiograms) | Planned |
 | Metrics: Apple/Spotify CSV import collectors | Planned |
 | Transcription, vector index, semantic search | Planned |
 

@@ -6,8 +6,9 @@ Usage:
 
 The file has no external scripts, fonts, or network calls, so it opens offline, can be
 attached or archived as-is, and leaks nothing when viewed. Its typeface (Martian Mono,
-SIL Open Font License, see metrics/fonts/OFL.txt) is embedded as base64. Data is rendered
-with `textContent` only, so post text from social APIs can't inject markup.
+SIL Open Font License, see metrics/fonts/OFL.txt) is embedded as base64, and its charting
+library (Chart.js 4.5.1, MIT, see metrics/vendor/chartjs-LICENSE.md) is inlined as a script.
+Data is rendered with `textContent` only, so post text from social APIs can't inject markup.
 """
 
 import argparse
@@ -26,6 +27,10 @@ PLACEHOLDER = "__DASHBOARD_DATA__"
 # Latin subset of the variable font (weight 100-800, width 75-112.5%), so the file looks the same on every machine.
 FONT_PATH = Path(__file__).with_name("fonts") / "MartianMono-latin.woff2"
 FONT_PLACEHOLDER = "__FONT_WOFF2_BASE64__"
+# Chart.js release build, byte-identical to the jsDelivr file for chart.js@4.5.1
+# (sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ).
+CHARTJS_PATH = Path(__file__).with_name("vendor") / "chart.umd.min.js"
+CHARTJS_PLACEHOLDER = "/*__CHARTJS__*/"
 
 
 def embed_json(data: Any) -> str:
@@ -39,13 +44,18 @@ def embed_json(data: Any) -> str:
 
 
 def render_report(data: dict[str, Any]) -> str:
-    """Fill the HTML template with the embedded font and the dashboard data.
+    """Fill the HTML template with the embedded font, the charting library, and the dashboard data.
 
-    The font goes in first, so a data string that happens to contain the font
+    The font and library go in first, so a data string that happens to contain either
     placeholder is never touched.
     """
     font = base64.b64encode(FONT_PATH.read_bytes()).decode("ascii")
-    html = TEMPLATE_PATH.read_text(encoding="utf-8").replace(FONT_PLACEHOLDER, font, 1)
+    chartjs = CHARTJS_PATH.read_text(encoding="utf-8")
+    # An inline script ends at the first "</script", wherever it appears.
+    if "</script" in chartjs.lower():
+        raise ValueError(f"{CHARTJS_PATH.name} contains '</script' and can't be inlined.")
+    html = TEMPLATE_PATH.read_text(encoding="utf-8")
+    html = html.replace(FONT_PLACEHOLDER, font, 1).replace(CHARTJS_PLACEHOLDER, chartjs, 1)
     return html.replace(PLACEHOLDER, embed_json(data), 1)
 
 

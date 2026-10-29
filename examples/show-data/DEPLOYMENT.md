@@ -41,7 +41,7 @@ Last verified: <YYYY-MM-DD>
 | `BLOG_URL_TEMPLATE` | <https://example.com/blog/{slug}/, or none> |
 | `SUBSTACK_PUBLICATION_URL` | <https://name.substack.com, or none> |
 | `INSTAGRAM_USERNAME` | <handle without @, or none> |
-| Metrics sources | <op3 / cloudflare / x / youtube / devto / substack / extra collectors>; `CLOUDFLARE_ZONE_ID` <zone>, `OP3_SHOW_UUID` <uuid> |
+| Metrics sources | <op3 / cloudflare / x / instagram / youtube / devto / substack / extra collectors>; `CLOUDFLARE_ZONE_ID` <zone>, `OP3_SHOW_UUID` <uuid> |
 
 ## Metrics
 

@@ -2,15 +2,21 @@
 <!--
   Podcast metrics dashboard template, filled by metrics/report.py.
   Self-contained on purpose: no external scripts, fonts, or requests, so it opens offline.
-  The one typeface (Martian Mono, OFL) is embedded by report.py as base64.
-  All data is inserted with textContent / attributes, never innerHTML.
+  The typeface (Martian Mono, OFL) is embedded as base64 and Chart.js 4.5.1 (MIT) is inlined.
+  All data is inserted with textContent / attributes, never innerHTML; charts draw on canvas.
+
+  Layout follows the standard dashboard pattern: filters in the header, a row of KPI cards,
+  a chart row (primary timeline, secondary comparison), then sortable detail tables.
+  Tabs: Overview, then one tab per platform. Each tab's dot is that platform's colour, or
+  red when its last collection failed. Tabs are URL hashes (#youtube), so back/forward work.
+
+  Filters: the range buttons (7D / 30D / 90D) and a measured stretch (drag across the
+  timeline) apply to every KPI, both charts, the sparklines, and the episode tables' range
+  columns, on every tab. The chart row is one element moved into whichever tab is open, so
+  the chosen metric and stretch carry across tabs.
 
   Design: terminal dense. Near-black, hairlines instead of boxes, square corners, small type in
-  the condensed cut of one monospace family (wide cut for section titles, regular for numbers),
-  so the whole report fits on few screens. The main chart is a
-  timeline you scrub like a DAW: hover moves a playhead, dragging measures a stretch, and cue
-  flags mark releases and thumbnail changes. Derived numbers (averages, week over week, best
-  weekday, ratios, catalog concentration) are computed here from the embedded data.
+  the condensed cut of one monospace family. Chart animations are off (many charts, instant updates).
 -->
 <html lang="en">
 <head>
@@ -36,7 +42,7 @@
     --ink: #d6e0e5;       /* text */
     --muted: #7b8990;     /* secondary text */
     --faint: #4b575d;     /* tertiary text, empty values */
-    --amber: #ffb454;     /* cue flags: releases, like a VU needle */
+    --amber: #ffb454;     /* releases and the measured stretch, like a VU needle */
     --up: #6fd0ae;
     --down: #f07c64;
     --radius: 2px;        /* square-ish corners everywhere */
@@ -48,45 +54,62 @@
   /* Dense by design: small type in the condensed cut, so a full report fits on few screens. */
   body { margin: 0; background: var(--bg); color: var(--ink); font: 400 12px/1.55 var(--mono); font-stretch: 75%;
          -webkit-font-smoothing: antialiased; }
-  main { max-width: 1240px; margin: 0 auto; padding: 0 24px 80px; }
+  main { max-width: 1320px; margin: 0 auto; padding: 0 24px 80px; }
   a { color: var(--ink); text-decoration-color: var(--rule-2); text-underline-offset: 3px; }
   a:hover { text-decoration-color: var(--ink); }
   :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
   button, input, select { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
   .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--src); flex: none; }
-  /* Labels: small uppercase, lightly tracked. The wide cut is saved for section titles and the show name. */
+  /* Labels: small uppercase, lightly tracked. The wide cut is saved for section titles and platform names. */
   .label { font-size: 10.5px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
   .faint { color: var(--faint); }
   .nowrap { white-space: nowrap; }
-  .empty { color: var(--muted); padding: 14px 0; }
+  .empty { color: var(--muted); padding: 14px 12px; }
   @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 
-  /* ---------- sticky bar: where you are, what range, is anything broken ---------- */
+  /* ---------- header: tabs, then the filters that apply to every tab ---------- */
   .topbar { position: sticky; top: 0; z-index: 10; height: var(--bar-h); background: var(--bar-bg);
             backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid var(--rule); }
-  .topbar-inner { max-width: 1240px; height: 100%; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; gap: 18px; }
+  .topbar-inner { max-width: 1320px; height: 100%; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; gap: 14px; }
   .brand { display: flex; align-items: center; gap: 8px; white-space: nowrap; color: var(--ink); }
   .brand::before { content: ""; width: 9px; height: 9px; background: var(--amber); border-radius: 2px; }
-  .nav { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
-  .nav a { padding: 4px 9px; border-radius: var(--radius); text-decoration: none; color: var(--muted); white-space: nowrap; }
-  .nav a:hover { color: var(--ink); background: var(--panel); }
-  .nav a[aria-current="true"] { color: var(--ink); background: var(--panel-2); }
+  .tabs { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; align-self: stretch; }
+  .tabs a { position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; text-decoration: none;
+            color: var(--muted); white-space: nowrap; }
+  .tabs a:hover { color: var(--ink); background: var(--panel-2); }
+  .tabs a[aria-selected="true"] { color: var(--ink); }
+  .tabs a[aria-selected="true"]::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px;
+                                         background: var(--src, var(--amber)); }
+  .tabs a .dot.failing { --src: var(--down); box-shadow: 0 0 0 3px rgba(240, 124, 100, 0.18); }
+  .filters { display: flex; align-items: center; gap: 8px; flex: none; }
   .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: var(--radius); padding: 2px; background: var(--panel); flex: none; }
   .seg button { border: 0; background: transparent; padding: 3px 9px; border-radius: 1px; cursor: pointer; color: var(--muted);
                 font-weight: 500; font-stretch: 100%; }
   .seg button:hover { color: var(--ink); }
   .seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+  .stretch-chip { display: inline-flex; align-items: center; gap: 7px; padding: 3px 9px; border: 1px solid rgba(255, 180, 84, 0.45);
+                  border-radius: var(--radius); background: rgba(255, 180, 84, 0.08); color: var(--amber); cursor: pointer; white-space: nowrap; }
+  .stretch-chip:hover { background: rgba(255, 180, 84, 0.16); }
   .health { display: inline-flex; align-items: center; gap: 7px; flex: none; padding: 3px 9px; border: 1px solid var(--rule);
             border-radius: var(--radius); text-decoration: none; color: var(--muted); }
   .health .dot { --src: var(--up); box-shadow: 0 0 0 3px rgba(111, 208, 174, 0.15); }
   .health.bad { color: var(--down); border-color: rgba(240, 124, 100, 0.4); }
   .health.bad .dot { --src: var(--down); box-shadow: 0 0 0 3px rgba(240, 124, 100, 0.15); }
 
-  /* ---------- masthead ---------- */
+  /* ---------- masthead and platform header ---------- */
   .masthead { padding: 16px 0 0; }
   .masthead h1 { margin: 0; font-size: 17px; font-weight: 500; font-stretch: 100%; line-height: 1.3; }
   .masthead .meta { margin-top: 2px; color: var(--muted); font-size: 11px; }
+  .phead { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 20px; align-items: end; padding: 16px 0 0; }
+  .phead h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 17px; font-weight: 600; font-stretch: 112.5%;
+              letter-spacing: 0.1em; text-transform: uppercase; }
+  .phead h1 .dot { width: 9px; height: 9px; }
+  .phead .p-about { color: var(--muted); font-size: 11.5px; }
+  .phead .p-run { grid-column: 2; grid-row: 1 / span 2; text-align: right; color: var(--faint); font-size: 11px; }
+  .phead .p-run .status { display: inline-block; margin-bottom: 4px; }
+  .phead .p-msg { grid-column: 1 / -1; color: var(--faint); font-size: 11px; }
 
   /* ---------- sections ---------- */
   section { scroll-margin-top: calc(var(--bar-h) + 10px); }
@@ -94,63 +117,75 @@
                   margin: 26px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
   .section-head h2 { margin: 0; font-size: 11px; font-weight: 600; font-stretch: 112.5%; letter-spacing: 0.14em; text-transform: uppercase; }
   .section-head .note { color: var(--faint); }
+  /* Anything reporting the measured stretch instead of the range is amber, like the stretch itself. */
+  .note.stretch, .k-meta.stretch, .compare-note.stretch { color: var(--amber); }
   .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--radius); }
 
-  /* ---------- headline strip: one row of numbers along the top of the chart panel ---------- */
-  .scope { margin-top: 12px; overflow: hidden; }
-  .stats { position: relative; display: flex; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--rule); }
-  .stat { position: relative; flex: 1 0 auto; min-width: 0; padding: 8px 14px; text-align: left;
-          background: none; border: 0; border-right: 1px solid var(--rule); }
-  .stat:last-child { border-right: 0; }
-  button.stat { cursor: pointer; }
-  button.stat:hover { background: var(--panel-2); }
-  .stat[aria-pressed="true"] { background: var(--panel-2); }
-  .stat[aria-pressed="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--src); }
-  .stat.first-static { border-left: 1px solid var(--rule-2); }
-  .s-label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap; }
-  .s-value { display: block; margin-top: 2px; font-size: 16px; font-weight: 500; font-stretch: 100%; letter-spacing: -0.01em; line-height: 1.25; }
-  .s-meta { display: block; color: var(--faint); font-size: 10px; white-space: nowrap; }
+  /* ---------- KPI cards (platform tab: every number; overview: inside each platform card) ---------- */
+  /* Grids of cards draw their hairlines per cell (right and bottom), so a short last row leaves page background. */
+  .kpi-row, .platforms { display: grid; margin-top: 12px; border-top: 1px solid var(--rule); border-left: 1px solid var(--rule); }
+  .kpi-row { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); }
+  .kpi-row > *, .platforms > * { border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .kpi { position: relative; display: block; min-width: 0; padding: 8px 12px; text-align: left; background: var(--panel); border: 0; }
+  button.kpi { cursor: pointer; }
+  button.kpi:hover { background: var(--panel-2); }
+  .kpi[aria-pressed="true"] { background: var(--panel-2); }
+  .kpi[aria-pressed="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--src); }
+  .k-label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .k-value { display: block; margin-top: 2px; font-size: 16px; font-weight: 500; font-stretch: 100%; letter-spacing: -0.01em; line-height: 1.25; }
+  .k-meta { display: block; color: var(--faint); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .delta { font-weight: 600; font-stretch: 100%; }
   .delta.up { color: var(--up); }
   .delta.down { color: var(--down); }
 
-  /* ---------- the timeline (signature) ---------- */
-  .scope-body { padding: 2px 14px 10px; }
-  .scope-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 18px; margin: 8px 0 4px; }
+  /* ---------- platform cards: the overview's KPI row ---------- */
+  .platforms { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .pcard { position: relative; display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px 0 8px; background: var(--panel); }
+  .pcard::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--src); opacity: 0.8; }
+  .pcard.failing::before { background: var(--down); }
+  .p-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; }
+  .p-name { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 600; font-stretch: 112.5%;
+            letter-spacing: 0.12em; text-transform: uppercase; }
+  .p-go { color: var(--muted); text-decoration: none; white-space: nowrap; }
+  .p-go:hover { color: var(--ink); }
+  .p-desc { margin: 0; padding: 0 12px; color: var(--faint); font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical; overflow: hidden; min-height: 2.9em; }
+  /* The lead number gets its own row; the next two share one, so their labels have room. */
+  .p-nums { display: grid; grid-template-columns: 1fr 1fr; }
+  .p-nums .kpi { padding: 5px 12px; border: 0; }
+  .p-nums .kpi:first-child { grid-column: 1 / -1; }
+  .p-nums .kpi:first-child .k-value { font-size: 20px; }
+  .p-nums .kpi .k-value { font-size: 13.5px; }
+  .p-nums .empty { grid-column: 1 / -1; padding: 6px 12px; }
+  .spark { position: relative; height: 38px; margin: 0 12px; }
+  .p-foot { display: flex; justify-content: space-between; gap: 8px; padding: 0 12px; color: var(--faint); font-size: 10.5px; }
+  .p-foot .bad { color: var(--down); }
+
+  /* ---------- chart row: primary timeline and secondary comparison ---------- */
+  .chart-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); gap: 12px; margin-top: 12px; }
+  .chart-panel { display: flex; flex-direction: column; min-width: 0; padding: 10px 14px 12px; }
+  .panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 14px; margin-bottom: 6px; }
+  .controls { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .seg.small button { padding: 3px 9px; font-size: 11.5px; font-weight: 400; }
   .select { position: relative; display: inline-flex; align-items: center; min-width: 0; max-width: 100%; }
   .select select { appearance: none; -webkit-appearance: none; max-width: 100%; text-overflow: ellipsis; cursor: pointer;
-                   background: transparent; border: 1px solid var(--rule); border-radius: var(--radius); padding: 3px 28px 3px 9px;
-                   color: var(--muted); font-size: 11.5px; }
-  .select select:hover, .select.active select { border-color: var(--rule-2); color: var(--ink); }
+                   background: var(--panel); border: 1px solid var(--rule-2); border-radius: var(--radius); padding: 3px 28px 3px 9px;
+                   color: var(--ink); font-size: 11.5px; }
+  .select select:hover { border-color: var(--muted); }
   .select::after { content: ""; position: absolute; right: 12px; top: 50%; width: 5px; height: 5px; margin-top: -4px;
                    border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg); pointer-events: none; }
+  .select optgroup, .select option { background: var(--bg); color: var(--ink); }
   .readout { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; min-height: 2.4em; }
   .readout .r-main { font-size: 14px; font-weight: 500; font-stretch: 100%; }
   .readout .r-sub { color: var(--muted); }
   .readout .r-cue { color: var(--amber); }
-  .track { position: relative; height: 210px; touch-action: pan-y; cursor: crosshair; user-select: none; }
-  .track:focus-visible { outline-offset: 4px; }
-  .track svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  .track .bar { fill: var(--src); }
-  .track .bar.off { fill: var(--rule-2); }
-  .nodata { position: absolute; top: 0; bottom: 0; left: 0; pointer-events: none; border-right: 1px dashed var(--rule-2);
-            background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(227, 235, 231, 0.045) 6px 7px); }
-  .nodata span { position: absolute; left: 10px; bottom: 8px; color: var(--faint); font-size: 11px; }
-  .selection { position: absolute; top: 0; bottom: 0; pointer-events: none; background: rgba(242, 169, 59, 0.12);
-               border-left: 1px solid var(--amber); border-right: 1px solid var(--amber); }
-  .playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--ink); pointer-events: none; }
-  .playhead::before { content: ""; position: absolute; top: -1px; left: -5px; border: 5px solid transparent; border-top: 6px solid var(--ink); border-bottom: 0; }
-  .cues { position: absolute; inset: 0; pointer-events: none; }
-  .cue { position: absolute; top: 0; bottom: 0; width: 16px; margin-left: -8px; padding: 0; border: 0; background: none; cursor: pointer; pointer-events: auto; }
-  .cue::before { content: ""; position: absolute; left: 7px; top: 14px; bottom: 0; border-left: 1px dashed rgba(242, 169, 59, 0.4); }
-  .cue .head { position: absolute; left: 2px; top: 0; min-width: 12px; height: 12px; padding: 0 2px; border-radius: 2px 2px 2px 0;
-               background: var(--amber); color: var(--bg); font-size: 8.5px; font-weight: 700; line-height: 12px; text-align: center; }
-  .cue.thumbnail::before { border-left-color: rgba(227, 235, 231, 0.3); }
-  .cue.thumbnail .head { background: var(--ink); }
-  .axis { position: relative; height: 18px; margin-top: 6px; color: var(--faint); font-size: 11px; }
-  .axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
-  .axis span.start { transform: none; }
-  .axis span.end { transform: translateX(-100%); }
+  .chart-box { position: relative; height: 240px; }
+  .chart-box.tall { height: 260px; touch-action: pan-y; cursor: crosshair; user-select: none; }
+  .chart-box.tall:focus-visible { outline-offset: 4px; }
+  .track-key { color: var(--faint); font-size: 11px; white-space: nowrap; }
+  .track-key::before { content: ""; display: inline-block; width: 14px; height: 0; margin-right: 6px; vertical-align: middle;
+                       border-top: 1.5px solid var(--ink); opacity: 0.7; }
   .daylog { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--rule);
             min-height: 40px; color: var(--faint); font-size: 11px; }
   .chip { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 2px 8px; border: 1px solid var(--rule);
@@ -159,58 +194,30 @@
   .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip .k { width: 7px; height: 7px; border-radius: 2px; background: var(--amber); flex: none; }
   .chip.thumbnail .k { background: var(--ink); }
-  .controls { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  .seg.small button { padding: 3px 9px; font-size: 11.5px; font-weight: 400; }
-  .track .grid { stroke: #141a1c; stroke-dasharray: 2 3; }
-  .track .avg { fill: none; stroke: var(--ink); stroke-opacity: 0.7; stroke-width: 1.5; }
-  .track .area { fill: var(--src); fill-opacity: 0.14; }
-  .track .cum { fill: none; stroke: var(--src); stroke-width: 2; }
-  .ylabels { position: absolute; inset: 0; pointer-events: none; }
-  .ylabels span { position: absolute; left: 0; transform: translateY(-100%); padding-bottom: 2px; color: var(--faint); font-size: 10px; }
-  .track-key { color: var(--faint); font-size: 11px; white-space: nowrap; }
-  .track-key::before { content: ""; display: inline-block; width: 14px; height: 0; margin-right: 6px; vertical-align: middle;
-                       border-top: 1.5px solid var(--ink); opacity: 0.7; }
-
-  /* Side rail: what the selected metric is doing, plus ratios derived from two metrics. */
-  .scope-grid { display: grid; grid-template-columns: minmax(0, 1fr) 270px; }
-  .rail { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border-left: 1px solid var(--rule); min-width: 0; }
-  .rail h3 { margin: 0; }
-  .rail dl { margin: 6px 0 0; }
-  .rail-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 2px 0; border-bottom: 1px solid var(--rule); }
-  .rail-row:last-child { border-bottom: 0; }
-  .rail-row dt { color: var(--muted); }
-  .rail-row dd { margin: 0; font-weight: 500; font-stretch: 100%; white-space: nowrap; }
-  .week-bars { display: block; width: 100%; height: 64px; margin-top: 10px; }
-  .week-bars rect { fill: var(--rule-2); }
-  .week-bars rect.best { fill: var(--src); }
-  .week-days { display: grid; grid-template-columns: repeat(7, 1fr); color: var(--faint); font-size: 10px; text-align: center; margin-top: 4px; }
-  .rail-note { color: var(--faint); font-size: 11px; margin-top: 6px; }
+  /* Derived numbers for the charted series, in a strip under the chart. */
+  .facts-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 0 18px; margin: 8px 0 0; padding-top: 6px;
+                 border-top: 1px solid var(--rule); }
+  .facts-strip div { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--rule); }
+  .facts-strip dt { color: var(--muted); }
+  .facts-strip dd { margin: 0; font-weight: 500; font-stretch: 100%; white-space: nowrap; }
+  .facts-note { margin: 6px 0 0; color: var(--faint); font-size: 11px; }
+  .open-link { align-self: flex-start; margin-top: 8px; color: var(--muted); text-decoration: none; }
+  .open-link:hover { color: var(--ink); }
+  .open-link .dot { margin-right: 7px; }
+  .compare-note { margin-top: 6px; color: var(--faint); font-size: 11px; }
 
   /* ---------- back catalog ---------- */
   .kpis { display: flex; flex-wrap: wrap; gap: 8px 28px; padding: 10px 12px; border-bottom: 1px solid var(--rule); }
-  .kpi .k-value { display: block; font-size: 15px; font-weight: 500; font-stretch: 100%; }
-  .kpi .k-label { color: var(--muted); font-size: 11px; }
+  .kpis .v { display: block; font-size: 15px; font-weight: 500; font-stretch: 100%; }
+  .kpis .l { color: var(--muted); font-size: 11px; }
   .plots { display: grid; grid-template-columns: 1fr 1fr; }
-  .plot { min-width: 0; padding: 8px 12px; }
+  .plot { min-width: 0; padding: 8px 12px 10px; }
   .plot.wide { grid-column: 1 / -1; border-bottom: 1px solid var(--rule); }
   .plot.half + .plot.half { border-left: 1px solid var(--rule); }
-  .plot-title { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-bottom: 8px; }
+  .plot-title { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-bottom: 6px; }
   .plot-title .faint { font-size: 11px; }
-  .plot svg { display: block; width: 100%; overflow: visible; }
-  .plot svg text { fill: var(--faint); font: 10px var(--mono); }
-  .plot svg text.lead { fill: var(--muted); }
-  .plot .gridline { stroke: var(--rule); }
-  .plot .dotp { fill: var(--src); fill-opacity: 0.7; cursor: pointer; }
-  .plot .dotp:hover { fill-opacity: 1; stroke: var(--ink); }
-  .plot .ybar { fill: var(--src); fill-opacity: 0.85; cursor: pointer; }
-  .plot .ybar:hover { fill-opacity: 1; }
-  .plot .curve { fill: none; stroke: var(--src); stroke-width: 2; }
-  .plot .curve-area { fill: var(--src); fill-opacity: 0.1; }
-  .plot .diag { stroke: var(--rule-2); stroke-dasharray: 3 4; }
-  .tip { position: fixed; z-index: 20; max-width: 300px; padding: 8px 10px; pointer-events: none; background: #0a0f0e;
-         border: 1px solid var(--rule-2); border-radius: var(--radius); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); font-size: 12px; }
-  .tip b { display: block; font-weight: 500; font-stretch: 100%; }
-  .tip span { display: block; color: var(--muted); }
+  .plot .chart-box { height: 220px; }
+  .plot.half .chart-box { height: 170px; }
 
   /* ---------- tables ---------- */
   .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 10px; }
@@ -239,6 +246,7 @@
   th.n button { align-items: flex-end; }
   th button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
   .th-sub { display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font-size: 10.5px; text-transform: none; letter-spacing: 0; }
+  .th-sub.stretch { color: var(--amber); }
   th[aria-sort] .label { color: var(--ink); }
   th[aria-sort="descending"] .label::after { content: " ↓"; }
   th[aria-sort="ascending"] .label::after { content: " ↑"; }
@@ -252,34 +260,18 @@
   .ep-topic { color: var(--faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .item-label { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-width: 240px; max-width: 540px; }
   tr.detail > td, tr.detail:hover > td { background: var(--panel-2); padding: 10px 12px 12px; }
-  /* Expanded episode: a plain list of the numbers that exist, then links. */
-  .facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0 32px; margin: 0; max-width: 960px; }
+  /* Expanded episode: every number it has, from every platform, then links. */
+  .facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0 32px; margin: 0; max-width: 1100px; }
   .fact { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--rule); }
   .fact dt { display: flex; align-items: center; gap: 8px; color: var(--muted); min-width: 0; }
   .fact dd { margin: 0; font-size: 13.5px; font-weight: 500; font-stretch: 100%; text-align: right; }
   .detail-links { margin: 12px 0 0; padding: 0; list-style: none; }
   .detail-links li { margin-top: 4px; color: var(--faint); }
   .detail-links a { color: var(--ink); }
-  .more { margin: 8px 0 0; padding: 4px 10px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--panel); cursor: pointer; color: var(--muted); }
-  .more:hover { color: var(--ink); border-color: var(--rule-2); }
-  .subhead { display: flex; align-items: center; gap: 8px; margin: 22px 0 10px; }
-
-  /* ---------- audience ---------- */
-  .audience { display: grid; grid-template-columns: minmax(200px, 260px) 1fr; }
-  .views { display: flex; flex-direction: column; gap: 1px; padding: 6px; border-right: 1px solid var(--rule); }
-  .views button { display: flex; align-items: center; gap: 9px; padding: 4px 8px; border: 0; border-radius: var(--radius); background: transparent;
-                  color: var(--muted); cursor: pointer; text-align: left; }
-  .views button:hover { color: var(--ink); background: var(--panel-2); }
-  .views button[aria-pressed="true"] { color: var(--ink); background: var(--panel-2); box-shadow: inset 2px 0 0 var(--src); }
-  .view { padding: 10px 14px 12px; min-width: 0; }
-  .view-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; margin-bottom: 14px; }
-  .view-head .v-total { font-size: 20px; font-weight: 500; font-stretch: 100%; }
-  .bars { list-style: none; margin: 0; padding: 0; }
-  .bars li { display: grid; grid-template-columns: minmax(90px, 1fr) auto 44px; gap: 4px 12px; align-items: baseline; margin-bottom: 10px; }
-  .bars .share { color: var(--faint); text-align: right; font-size: 11px; }
-  .bars .line { grid-column: 1 / -1; height: 4px; background: var(--rule); border-radius: 2px; overflow: hidden; }
-  .bars .fill { height: 100%; background: var(--src); border-radius: 2px; }
-  .bars .rest { color: var(--faint); font-size: 11.5px; }
+  .pager { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; color: var(--faint); }
+  .pager button { padding: 3px 10px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--panel); cursor: pointer; color: var(--muted); }
+  .pager button:hover:not(:disabled) { color: var(--ink); border-color: var(--rule-2); }
+  .pager button:disabled { opacity: 0.4; cursor: default; }
 
   /* ---------- sources ---------- */
   .sources { list-style: none; margin: 0; padding: 0; }
@@ -295,29 +287,35 @@
   .span-fill { position: absolute; top: 0; bottom: 0; min-width: 4px; background: var(--src); border-radius: 3px; }
   .src-detail .faint { font-size: 11px; }
 
+  @media (max-width: 900px) {
+    .chart-row { grid-template-columns: minmax(0, 1fr); }
+  }
   @media (max-width: 760px) {
     main, .topbar-inner { padding-left: 14px; padding-right: 14px; }
     .topbar-inner { gap: 10px; }
-    .brand span, .health span:last-child { display: none; }
-    .stat { min-width: 104px; padding: 8px 12px; }
-    .scope-body { padding: 2px 12px 10px; }
-    .scope-grid, .plots { grid-template-columns: 1fr; }
-    .rail { border-left: 0; border-top: 1px solid var(--rule); }
+    .brand span, .health span:last-child, .stretch-chip span { display: none; }
+    .tabs a { padding: 0 7px; }
+    .phead { grid-template-columns: 1fr; }
+    .phead .p-run { grid-column: auto; grid-row: auto; text-align: left; }
+    .plots { grid-template-columns: 1fr; }
     .plot.half + .plot.half { border-left: 0; border-top: 1px solid var(--rule); }
-    .track { height: 170px; }
-    .audience { grid-template-columns: 1fr; }
-    .views { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--rule); }
-    .views button { white-space: nowrap; }
+    .chart-box.tall { height: 200px; }
     .sources li { grid-template-columns: 1fr auto; }
     .sources li .span-track, .sources li .src-detail { grid-column: 1 / -1; }
     .count { margin-left: 0; }
   }
   @media (prefers-reduced-motion: no-preference) {
-    /* One orchestrated moment: on first load the bars play in, left to right, like tape passing the head. */
-    .track svg.sweep .bar { transform-box: fill-box; transform-origin: center bottom;
-                            animation: rise 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both; animation-delay: calc(var(--d) * 700ms); }
-    @keyframes rise { from { transform: scaleY(0); } }
-    .stat, .seg button, .nav a, .chip, .views button { transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease; }
+    .kpi, .seg button, .tabs a, .chip, .pager button { transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease; }
+  }
+  /* Print: the open tab on white, without the controls that only work on screen. */
+  @media print {
+    body { background: #fff; color: #111; }
+    .topbar { position: static; background: #fff; border-bottom-color: #ccc; backdrop-filter: none; }
+    .seg, .health, .stretch-chip, .tools, .pager, .controls, .select, .daylog, .disclose { display: none !important; }
+    .tabs a:not([aria-selected="true"]) { display: none; }
+    .panel, .pcard, .kpi, .kpi-row, .platforms { background: #fff; border-color: #ccc; break-inside: avoid; }
+    .chart-row { grid-template-columns: 1fr; }
+    a, .ep-guest, .k-value, .readout .r-main { color: #111; }
   }
 </style>
 </head>
@@ -325,86 +323,97 @@
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand label"><span>Listening report</span></div>
-    <nav class="nav" id="nav" aria-label="Sections"></nav>
-    <div class="seg" id="range" role="group" aria-label="Time range"></div>
-    <a class="health" id="health" href="#sources"></a>
+    <nav class="tabs" id="tabs" role="tablist" aria-label="Overview and platforms"></nav>
+    <div class="filters" aria-label="Filters for every tab">
+      <button type="button" class="stretch-chip" id="stretch-chip" hidden></button>
+      <div class="seg" id="range" role="group" aria-label="Time range"></div>
+      <a class="health" id="health" href="#sources"></a>
+    </div>
   </div>
 </header>
 
 <main>
-  <div class="masthead">
-    <h1 id="title">Listening report</h1>
-    <div class="meta" id="meta"></div>
+  <div id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
+    <div class="masthead">
+      <h1 id="title">Listening report</h1>
+      <div class="meta" id="meta"></div>
+    </div>
+    <section id="platforms-section" aria-label="Platforms">
+      <div class="platforms" id="platforms"></div>
+    </section>
+    <div id="slot-overview"></div>
+    <section id="episodes-section" aria-labelledby="episodes-title">
+      <div class="section-head"><h2 id="episodes-title">Episodes</h2><span class="note" id="episodes-note"></span></div>
+      <div id="episodes"></div>
+    </section>
+    <section id="catalog" aria-labelledby="catalog-title">
+      <div class="section-head">
+        <h2 id="catalog-title">Back catalog</h2>
+        <label class="select"><span class="visually-hidden">Catalog metric</span><select id="catalog-metric"></select></label>
+      </div>
+      <div class="panel" id="catalog-body"></div>
+    </section>
+    <section id="sources" aria-labelledby="sources-title">
+      <div class="section-head"><h2 id="sources-title">Sources</h2><span class="note">what each collector holds and how its last run went</span></div>
+      <ul class="sources panel" id="sources-list"></ul>
+    </section>
   </div>
 
-  <section id="overview" data-nav="Overview" aria-label="Overview">
-    <div class="panel scope">
-      <div class="stats" id="stats" role="group" aria-label="Headline numbers; daily ones switch the chart"></div>
-      <div class="scope-grid">
-        <div class="scope-body">
-          <div class="scope-head">
-            <div class="readout" id="readout" aria-live="polite"></div>
-            <div class="controls">
-              <div class="seg small" id="mode" role="group" aria-label="Chart view">
-                <button type="button" data-mode="daily" aria-pressed="true">daily</button>
-                <button type="button" data-mode="cumulative" aria-pressed="false">cumulative</button>
-              </div>
-              <label class="select" id="more-wrap"><span class="visually-hidden">More daily metrics</span><select id="metric"></select></label>
-              <span class="track-key" id="track-key" hidden>7-day average</span>
-            </div>
+  <!-- One panel for every platform tab, rebuilt from the data each time a platform opens. -->
+  <div id="panel-platform" role="tabpanel" hidden>
+    <div class="phead" id="phead"></div>
+    <div class="kpi-row" id="kpis" role="group" aria-label="Every number; each one puts its series on the chart"></div>
+    <div id="slot-platform"></div>
+    <div id="platform-body"></div>
+  </div>
+
+  <!-- The chart row: moved into whichever tab is open, so its metric and measured stretch carry over. -->
+  <div class="chart-row" id="chart-row">
+    <section class="panel chart-panel" aria-label="Timeline">
+      <div class="panel-head">
+        <label class="select" id="metric-wrap"><span class="visually-hidden">Metric on the chart</span><select id="metric"></select></label>
+        <div class="controls">
+          <div class="seg small" id="mode" role="group" aria-label="Chart view">
+            <button type="button" data-mode="daily" aria-pressed="true">daily</button>
+            <button type="button" data-mode="cumulative" aria-pressed="false">cumulative</button>
           </div>
-          <div class="track" id="track" tabindex="0" aria-describedby="track-help"></div>
-          <p class="visually-hidden" id="track-help">Use the left and right arrow keys to move through days, shift plus arrow to measure a stretch, and Escape to clear.</p>
-          <div class="axis" id="axis" aria-hidden="true"></div>
-          <div class="daylog" id="daylog"></div>
+          <span class="track-key" id="track-key" hidden>7-day average</span>
         </div>
-        <aside class="rail" id="rail" aria-label="About this metric"></aside>
       </div>
-    </div>
-  </section>
-
-  <section id="catalog" data-nav="Catalog" aria-labelledby="catalog-title">
-    <div class="section-head">
-      <h2 id="catalog-title">Back catalog</h2>
-      <label class="select"><span class="visually-hidden">Catalog metric</span><select id="catalog-metric"></select></label>
-    </div>
-    <div class="panel" id="catalog-body"></div>
-  </section>
-
-  <section id="episodes-section" data-nav="Episodes" aria-labelledby="episodes-title">
-    <div class="section-head"><h2 id="episodes-title">Episodes</h2><span class="note" id="episodes-note"></span></div>
-    <div id="episodes"></div>
-  </section>
-
-  <section id="audience" data-nav="Audience" aria-labelledby="audience-title">
-    <div class="section-head"><h2 id="audience-title">Audience</h2><span class="note" id="audience-note"></span></div>
-    <div id="audience-body"></div>
-  </section>
-
-  <section id="items" data-nav="Posts &amp; videos" aria-labelledby="items-title">
-    <div class="section-head"><h2 id="items-title">Posts and videos</h2><span class="note">newest tracked, latest numbers</span></div>
-    <div id="items-body"></div>
-  </section>
-
-  <section id="sources" data-nav="Sources" aria-labelledby="sources-title">
-    <div class="section-head"><h2 id="sources-title">Sources</h2><span class="note">what each collector holds and how its last run went</span></div>
-    <ul class="sources panel" id="sources-list"></ul>
-  </section>
+      <div class="readout" id="readout" aria-live="polite"></div>
+      <div class="chart-box tall" id="track" tabindex="0" aria-describedby="track-help"><canvas id="timeline" role="img"></canvas></div>
+      <p class="visually-hidden" id="track-help">Use the left and right arrow keys to move through days, shift plus arrow to measure a stretch, and Escape to clear.</p>
+      <div class="daylog" id="daylog"></div>
+      <div id="facts"></div>
+    </section>
+    <section class="panel chart-panel" aria-label="Compare">
+      <div class="panel-head">
+        <label class="select" id="compare-pick-wrap"><span class="visually-hidden">What to compare</span><select id="compare-pick"></select></label>
+      </div>
+      <div class="chart-box" id="compare-box"><canvas id="compare" role="img"></canvas></div>
+      <div class="compare-note" id="compare-note"></div>
+    </section>
+  </div>
 </main>
 
+<script>/*__CHARTJS__*/</script>
 <script id="dashboard-data" type="application/json">__DASHBOARD_DATA__</script>
 <script>
 "use strict";
 const DATA = JSON.parse(document.getElementById("dashboard-data").textContent);
 const SVG_NS = "http://www.w3.org/2000/svg";
-const EPISODE_ROWS_COLLAPSED = 20;
+const PAGE_SIZE = 25;
+const TOP_ROWS = 10;
 
 /* ---------- small helpers ---------- */
+
+// A value that was collected (zero counts; missing doesn't).
+const has = (v) => v !== null && v !== undefined;
 
 // Create an element with attributes and text; text always goes through textContent.
 function el(tag, attrs = {}, text) {
   const node = tag.startsWith("svg:") ? document.createElementNS(SVG_NS, tag.slice(4)) : document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null && v !== false) node.setAttribute(k, v);
+  for (const [k, v] of Object.entries(attrs)) if (has(v) && v !== false) node.setAttribute(k, v);
   if (text !== undefined) node.textContent = text;
   return node;
 }
@@ -416,7 +425,7 @@ function safeHref(url) {
 
 // Human-sized numbers: 1,234 / 12.3k / 4.5M; bytes get binary units.
 function fmt(value, metric) {
-  if (value === null || value === undefined) return "–";
+  if (!has(value)) return "–";
   if (metric === "bytes") {
     const units = ["B", "KB", "MB", "GB", "TB"];
     let v = value, i = 0;
@@ -430,6 +439,12 @@ function fmt(value, metric) {
   return value.toLocaleString("en-US");
 }
 
+// A change rather than a level: "+12", "−3", "±0".
+function fmtSigned(value, metric) {
+  if (!has(value)) return "–";
+  return `${value > 0 ? "+" : value < 0 ? "−" : "±"}${fmt(Math.abs(value), metric)}`;
+}
+
 function shortDate(iso) {
   return new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
@@ -438,24 +453,20 @@ function dayName(iso) {
   return new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
 }
 
-const sum = (values) => values.reduce((s, v) => s + v, 0);
+const sum = (values) => values.reduce((s, v) => s + (v || 0), 0);
+// The numbers of a [[date, value], ...] series.
+const valuesOf = (series) => series.map(([, v]) => v);
+// A run timestamp as "2026-10-29 06:17".
+const runTime = (iso) => iso.replace("T", " ").slice(0, 16);
 const median = (values) => {
   const s = [...values].sort((a, b) => a - b), mid = Math.floor(s.length / 2);
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 };
 
-// Round axis ticks (0, 5, 10, 15 / 0, 250, 500 ...) covering `max` in about `count` steps.
-function niceTicks(max, count = 3) {
-  if (!(max > 0)) return [0, 1];
-  const raw = max / count, magnitude = 10 ** Math.floor(Math.log10(raw));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((s) => s >= raw);
-  return Array.from({ length: Math.ceil(max / step) + 1 }, (_, i) => i * step);
-}
-
-// Running total from the first collected day (earlier days stay 0).
+// Running total from the first collected day (earlier days stay empty).
 function runningTotal(values, from) {
   let total = 0;
-  return values.map((v, i) => (i < from ? 0 : (total += v)));
+  return values.map((v, i) => (i < from ? null : (total += v)));
 }
 
 // Trailing 7-day mean once seven collected days exist; null before that.
@@ -463,34 +474,44 @@ function trailingAverage(values, from, window = 7) {
   return values.map((_, i) => (i - from + 1 >= window ? sum(values.slice(i - window + 1, i + 1)) / window : null));
 }
 
-// One shared tooltip for the catalog plots; lines go in as text, never markup.
-const TIP = el("div", { class: "tip", hidden: "" });
-document.body.append(TIP);
-function showTip(ev, title, lines) {
-  TIP.replaceChildren(el("b", {}, title), ...lines.map((l) => el("span", {}, l)));
-  TIP.hidden = false;
-  const x = Math.min(ev.clientX + 14, window.innerWidth - TIP.offsetWidth - 8);
-  const y = ev.clientY + 14 + TIP.offsetHeight > window.innerHeight ? ev.clientY - TIP.offsetHeight - 10 : ev.clientY + 14;
-  TIP.style.left = `${x}px`;
-  TIP.style.top = `${y}px`;
-}
-const hideTip = () => { TIP.hidden = true; };
-
 // Episode titles read "Guest — Topic"; split them so the guest can lead.
 function splitTitle(title) {
   const [guest, ...rest] = (title || "").split(" — ");
   return { guest, topic: rest.join(" — ") };
 }
 
-/* ---------- colour per source ---------- */
+// A CSS custom property's value, so chart colours come from the same tokens as the page.
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// "#rrggbb" with an alpha, for chart fills.
+function alpha(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+/* ---------- colour and name per source ---------- */
 
 // Built-in collectors get fixed colours; plugged-in sources get a stable one from the fallback set.
-const SOURCE_COLORS = { op3: "#5cc3cc", cloudflare: "#a896f2", youtube: "#f28b77", x: "#a8b8d8" };
-const FALLBACK_COLORS = ["#c3d36f", "#ef9fc6", "#e0b06a"];
+const SOURCE_COLORS = {
+  op3: "#5cc3cc", cloudflare: "#a896f2", youtube: "#f28b77", x: "#a8b8d8",
+  instagram: "#ef8fbf", devto: "#c3d36f", substack: "#d7c4a3",
+};
+const FALLBACK_COLORS = ["#9ad4ff", "#f5d76e", "#b5e48c"];
 function sourceColor(source) {
   if (SOURCE_COLORS[source]) return SOURCE_COLORS[source];
   const hash = [...(source || "")].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
   return FALLBACK_COLORS[hash % FALLBACK_COLORS.length];
+}
+// Display names for built-in sources; a plugged-in source shows its collector name, capitalized.
+const SOURCE_NAMES = {
+  op3: "OP3", cloudflare: "Cloudflare", youtube: "YouTube", x: "X", instagram: "Instagram", devto: "dev.to", substack: "Substack",
+};
+const sourceName = (source) => SOURCE_NAMES[source] || source.charAt(0).toUpperCase() + source.slice(1);
+// A metric label without its platform's name, for places that already say which platform ("YouTube views" → "Views").
+function shortLabel(label, source) {
+  const name = sourceName(source).toLowerCase(), lower = label.toLowerCase();
+  if (!lower.startsWith(`${name} `)) return label;
+  const rest = label.slice(name.length + 1);
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 // Sets --src on a node so CSS can colour it (and its children) by source.
 function tint(node, source) {
@@ -503,416 +524,519 @@ function sourceDot(source) {
 
 /* ---------- shared state ---------- */
 
-const chartKey = (c) => `${c.source}.${c.metric}`;
-const CHARTS = new Map(DATA.charts.map((c) => [chartKey(c), c]));
-const DATES = DATA.charts.length ? DATA.charts[0].series.map(([d]) => d) : [];
+// Every series the timeline can show, keyed like the numbers that describe them ("youtube.views.show"):
+// daily totals (kind "day") and running totals such as followers or lifetime views (kind "snapshot").
+const CHARTS = new Map([...DATA.charts, ...DATA.trends].map((c) => [c.key, c]));
+const DATES = DATA.dates;
+const RUNS = Object.fromEntries(DATA.coverage.map((s) => [s.source, s]));
+const PLATFORM_NAMES = new Set(DATA.platforms.map((p) => p.source));
 // First day each source holds data: earlier days are "not collected", which is different from zero.
 const FIRST_DAY = Object.fromEntries(DATA.coverage.filter((s) => s.first_period).map((s) => [s.source, s.first_period]));
+// Each series' first day with data: a running total's first reading, or the day its source started collecting.
+for (const c of CHARTS.values()) {
+  c.first = c.kind === "snapshot" ? (c.series.find(([, v]) => v !== null) || [null])[0] : FIRST_DAY[c.source] || null;
+}
 const EVENTS_BY_DATE = DATA.events.reduce((m, e) => m.set(e.date, [...(m.get(e.date) || []), e]), new Map());
+// Events that can explain a series: releases for every platform, thumbnail changes only for YouTube's.
+const eventsOn = (date, chart) => (EVENTS_BY_DATE.get(date) || []).filter((e) => e.kind === "release" || chart.source === "youtube");
 const EPISODE_TITLES = new Map(DATA.episodes.rows.map((r) => [r.slug, r.title]));
 const RANGES = [...new Set([7, 30, 90, DATA.days])].filter((d) => d <= DATA.days && d <= DATES.length).sort((a, b) => a - b);
 
-// The default timeline metric: the headline chart with the longest collected history (ties keep headline order).
-const collectedDays = (c) => c.series.filter(([d]) => !FIRST_DAY[c.source] || d >= FIRST_DAY[c.source]).length;
-const defaultChart = [...DATA.charts].filter((c) => c.headline).sort((a, b) => collectedDays(b) - collectedDays(a))[0] || DATA.charts[0];
+// The series a tab opens on: headline before the rest, daily before running totals, then the longest history.
+const collectedDays = (c) => c.series.filter(([d, v]) => v !== null && (!c.first || d >= c.first)).length;
+function defaultKey(tab) {
+  const rank = (c) => (c.headline ? 0 : 2) + (c.kind === "day" ? 0 : 1);
+  const pool = [...CHARTS.values()].filter((c) => tab === "overview" || c.source === tab);
+  pool.sort((a, b) => rank(a) - rank(b) || collectedDays(b) - collectedDays(a));
+  return pool.length ? pool[0].key : null;
+}
 const state = {
+  tab: "overview",   // "overview" or a platform's source name
   range: RANGES.length ? RANGES[RANGES.length - 1] : DATES.length,
-  key: defaultChart ? chartKey(defaultChart) : null,
-  playhead: null,    // index into the visible days, or null
-  selection: null,   // [start, end] indices into the visible days, or null
+  key: defaultKey("overview"),
+  hover: null,       // index into the visible days under the pointer (or keyboard), or null
+  selection: null,   // [start, end] indices into the visible days, or null; a filter for every tab
   mode: "daily",     // "daily" bars with a 7-day average, or "cumulative" running total
-  animated: false,   // the load-in sweep plays once
+  compare: {},       // tab → chosen comparison id
 };
 
 const visibleDates = () => DATES.slice(-state.range);
 const visibleSeries = (chart) => chart.series.slice(-state.range);
+const stretchLabel = ([a, b]) => `${shortDate(visibleDates()[a])} – ${shortDate(visibleDates()[b])}`;
+// What the filters currently cover, in words.
+const spanLabel = () => (state.selection ? stretchLabel(state.selection) : `last ${state.range} days`);
+// Indices into the full window (DATA.dates) that the filters cover: the range, or the measured stretch inside it.
+function activeSpan() {
+  const at = DATES.length - state.range;
+  return state.selection ? [at + state.selection[0], at + state.selection[1]] : [at, DATES.length - 1];
+}
+// Total of a window-aligned daily array over the filtered days.
+function spanSum(values) {
+  const [a, b] = activeSpan();
+  let total = 0;
+  for (let i = a; i <= b; i++) total += values[i] || 0;
+  return total;
+}
 
-// Index of the first visible day the source has data for (0 when it covers the whole range).
-function collectedFrom(source, dates) {
-  const first = FIRST_DAY[source];
-  if (!first || first <= dates[0]) return 0;
-  const i = dates.findIndex((d) => d >= first);
+// Index of the first visible day the series has data for (0 when it covers the whole range).
+function collectedFrom(chart, dates) {
+  if (!chart.first || chart.first <= dates[0]) return 0;
+  const i = dates.findIndex((d) => d >= chart.first);
   return i === -1 ? dates.length : i;
 }
 
-/* ---------- top bar and masthead ---------- */
+/* ---------- Chart.js: theme and the overlay plugin ---------- */
 
-function renderChrome() {
-  document.getElementById("title").textContent = DATA.show_title;
-  document.title = `${DATA.show_title} · Listening report`;
-  const generated = DATA.generated_at.slice(0, 16).replace("T", " ");
-  document.getElementById("meta").textContent = `Data through ${shortDate(DATA.today)} · generated ${generated} UTC`;
+const COLORS = { ink: cssVar("--ink"), muted: cssVar("--muted"), faint: cssVar("--faint"), rule: cssVar("--rule"),
+                 rule2: cssVar("--rule-2"), amber: cssVar("--amber"), bg: cssVar("--bg") };
+Chart.defaults.font.family = '"Martian Mono", ui-monospace, Menlo, monospace';
+Chart.defaults.font.size = 10;
+Chart.defaults.color = COLORS.faint;
+Chart.defaults.borderColor = COLORS.rule;
+Chart.defaults.animation = false;
+Chart.defaults.maintainAspectRatio = false;
+Chart.defaults.plugins.legend.display = false;
+Object.assign(Chart.defaults.plugins.tooltip, {
+  backgroundColor: "#0a0f0e", borderColor: COLORS.rule2, borderWidth: 1, cornerRadius: 2, padding: 8,
+  titleColor: COLORS.ink, bodyColor: COLORS.muted, footerColor: COLORS.amber, displayColors: false,
+  titleFont: { weight: "500" }, footerFont: { weight: "400" },
+});
 
-  // Section links, built from the sections that have something to show.
-  const nav = document.getElementById("nav");
-  const links = [];
-  for (const section of document.querySelectorAll("main section[data-nav]")) {
-    if (section.hidden) continue;
-    const a = el("a", { href: `#${section.id}` }, section.dataset.nav);
-    nav.append(a);
-    links.push([section, a]);
-  }
-  // Highlight the section currently under the top bar.
-  const observer = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      if (!entry.isIntersecting) continue;
-      for (const [section, a] of links) a.setAttribute("aria-current", String(section === entry.target));
+// Draws what Chart.js has no option for, from `chart.$overlay`: the days before a series has data (hatched),
+// the measured stretch (amber band), release and thumbnail flags, and text labels next to chosen points.
+const overlayPlugin = {
+  id: "overlay",
+  beforeDatasetsDraw(chart) {
+    const o = chart.$overlay, x = chart.scales.x;
+    if (!o || !x || x.type !== "category") return;
+    const { ctx, chartArea: a } = chart, half = (x.getPixelForValue(1) - x.getPixelForValue(0)) / 2;
+    ctx.save();
+    if (o.offFrom > 0) {
+      const right = x.getPixelForValue(o.offFrom) - half;
+      ctx.fillStyle = "rgba(227, 235, 231, 0.035)";
+      ctx.fillRect(a.left, a.top, right - a.left, a.height);
+      ctx.strokeStyle = COLORS.rule2;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(right, a.top); ctx.lineTo(right, a.bottom); ctx.stroke();
+      if (o.hatchLabel && right - a.left > 150) {
+        ctx.fillStyle = COLORS.faint;
+        ctx.fillText(o.hatchLabel, a.left + 8, a.bottom - 8);
+      }
     }
-  }, { rootMargin: "-20% 0px -70% 0px" });
-  links.forEach(([section]) => observer.observe(section));
+    if (o.stretch) {
+      const [s, e] = o.stretch, l = x.getPixelForValue(s) - half, r = x.getPixelForValue(e) + half;
+      ctx.setLineDash([]);
+      ctx.fillStyle = alpha(COLORS.amber, 0.12);
+      ctx.fillRect(l, a.top, r - l, a.height);
+      ctx.strokeStyle = COLORS.amber;
+      ctx.beginPath(); ctx.moveTo(l, a.top); ctx.lineTo(l, a.bottom); ctx.moveTo(r, a.top); ctx.lineTo(r, a.bottom); ctx.stroke();
+    }
+    ctx.restore();
+  },
+  afterDatasetsDraw(chart) {
+    const o = chart.$overlay;
+    if (!o) return;
+    const { ctx, chartArea: a, scales: { x } } = chart;
+    ctx.save();
+    for (const { index, kind, count } of o.events || []) {
+      const px = x.getPixelForValue(index), colour = kind === "release" ? COLORS.amber : COLORS.ink;
+      ctx.strokeStyle = alpha(colour, 0.4);
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.moveTo(px, a.top + 12); ctx.lineTo(px, a.bottom); ctx.stroke();
+      // The flag hangs right of its line, or left near the chart's right edge so it isn't cut off.
+      const left = px + 12 > a.right ? px - 11 : px - 1;
+      ctx.fillStyle = colour;
+      ctx.fillRect(left, a.top, 12, 11);
+      if (count > 1) {
+        ctx.fillStyle = COLORS.bg;
+        ctx.font = `700 8px ${Chart.defaults.font.family}`;
+        ctx.fillText(String(count), left + 3, a.top + 8.5);
+      }
+    }
+    for (const { x: vx, y: vy, text, dx = 8, dy = 3 } of o.labels || []) {
+      ctx.fillStyle = COLORS.muted;
+      ctx.font = `10px ${Chart.defaults.font.family}`;
+      ctx.textAlign = dx < 0 ? "right" : "left";
+      ctx.fillText(text, chart.scales.x.getPixelForValue(vx) + dx, chart.scales.y.getPixelForValue(vy) + dy);
+    }
+    ctx.restore();
+  },
+};
+Chart.register(overlayPlugin);
 
-  const seg = document.getElementById("range");
-  for (const days of RANGES) {
-    const b = el("button", { type: "button", "aria-pressed": String(days === state.range), "aria-label": `Last ${days} days` }, `${days}D`);
-    b.dataset.days = days;
-    b.addEventListener("click", () => setRange(days));
-    seg.append(b);
+// Charts are created once and updated in place when filters change (no re-creation, no animation).
+function upsertChart(canvas, config) {
+  let existing = Chart.getChart(canvas);
+  // Chart.js can't switch an existing chart's type, so a new type means a new chart.
+  if (existing && existing.config.type !== config.type) {
+    existing.destroy();
+    existing = null;
   }
-
-  // One glance at collector health; the link jumps to the details.
-  const health = document.getElementById("health");
-  const failing = DATA.coverage.filter((s) => s.last_run_status === "failed").length;
-  const total = DATA.coverage.length;
-  health.classList.toggle("bad", failing > 0 || !total);
-  health.append(el("span", { class: "dot", "aria-hidden": "true" }),
-    el("span", {}, !total ? "no sources yet" : failing ? `${failing}/${total} sources failing` : `${total} sources ok`));
+  if (!existing) return new Chart(canvas, config);
+  existing.data = config.data;
+  existing.options = config.options;
+  existing.update("none");
+  return existing;
 }
 
-function setRange(days) {
-  state.range = days;
-  state.playhead = state.selection = null;
-  document.querySelectorAll("#range button").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.days) === days)));
-  renderStats();
-  renderTimeline();
+/* ---------- numbers: KPI cards ---------- */
+
+// What one series reports right now: {value, previous, compare, basis, change, stretch}.
+// Daily numbers: the total over the range, compared with the range before it (honest about missing
+// history). Running totals: the latest level, compared with the level a range ago. While a stretch is
+// measured, both report that stretch instead: a daily total, or how far a level moved.
+// How far a running total moved over visible days a..b: from the day before the stretch (or its first
+// reading inside it) to the stretch's last day. {base, end, value}; value is null without readings.
+function levelChange(chart, [a, b]) {
+  const values = valuesOf(chart.series), at = values.length - state.range;
+  const end = values[at + b], base = values[at + a - 1] ?? values.slice(at + a, at + b + 1).find((v) => v !== null);
+  return { base, end, value: has(end) && has(base) ? end - base : null };
 }
 
-/* ---------- headline cards ---------- */
-
-// Totals for the visible range and the equal range before it, honest about missing history.
-function windowTotals(chart, headline) {
-  const n = state.range, series = chart.series, dates = series.map(([d]) => d);
-  const current = sum(series.slice(-n).map(([, v]) => v));
-  const first = FIRST_DAY[chart.source];
-  if (first && first > dates[dates.length - n]) return { current, previous: null, note: `since ${shortDate(first)}` };
-  if (n === DATA.days) return { current, previous: headline ? headline.previous : null };
-  if (series.length < 2 * n) return { current, previous: null };
-  if (first && first > dates[dates.length - 2 * n]) return { current, previous: null, note: `since ${shortDate(first)}` };
-  return { current, previous: sum(series.slice(-2 * n, -n).map(([, v]) => v)) };
+function reading(chart, number) {
+  const n = state.range, values = valuesOf(chart.series), at = values.length - n, sel = state.selection;
+  if (chart.kind === "snapshot") {
+    if (sel) {
+      const { value } = levelChange(chart, sel);
+      return { value, change: true, stretch: true, basis: `${value === null ? "no readings" : "change"} · ${stretchLabel(sel)}` };
+    }
+    const basis = chart.entity_type === "account" ? "latest" : `latest · ${chart.tracked} ${chart.entity_type}s`;
+    return { value: values[values.length - 1], previous: at > 0 ? values[at - 1] : null, compare: `vs ${n}d ago`, basis };
+  }
+  if (sel) return { value: sum(values.slice(at + sel[0], at + sel[1] + 1)), stretch: true, basis: stretchLabel(sel) };
+  const value = sum(values.slice(at)), dates = chart.series.map(([d]) => d), compare = `vs prev ${n}d`;
+  const since = { value, previous: null, basis: `since ${shortDate(chart.first)}` };
+  if (chart.first && chart.first > dates[at]) return since;
+  // The embedded series only covers the report window, so the full window's comparison comes from the collector data.
+  if (n === DATA.days) return { value, previous: number ? number.previous : null, compare, basis: `last ${n} days` };
+  if (at < n) return { value, previous: null, basis: `last ${n} days` };
+  if (chart.first && chart.first > dates[at - n]) return since;
+  return { value, previous: sum(values.slice(at - n, at)), compare, basis: `last ${n} days` };
 }
 
 // "↑ 12% vs prev 30d" when there's a baseline; otherwise the plain basis, so nothing pretends to compare.
-function metaLine(current, previous, basis, compareLabel) {
-  const line = el("span", { class: "s-meta" });
-  if (previous) {
-    const pct = Math.round(((current - previous) / previous) * 100);
-    line.append(el("span", { class: `delta ${pct >= 0 ? "up" : "down"}` }, `${pct >= 0 ? "↑" : "↓"} ${Math.abs(pct)}%`), ` ${compareLabel}`);
+function metaLine(r) {
+  const line = el("span", { class: `k-meta${r.stretch ? " stretch" : ""}` });
+  if (r.previous && r.value !== null && !r.stretch) {
+    const pct = Math.round(((r.value - r.previous) / r.previous) * 100);
+    line.append(el("span", { class: `delta ${pct >= 0 ? "up" : "down"}` }, `${pct >= 0 ? "↑" : "↓"} ${Math.abs(pct)}%`), ` ${r.compare}`);
   } else {
-    line.textContent = basis;
+    line.textContent = r.basis;
   }
   return line;
 }
 
-// The headline strip. Daily numbers are tabs that switch the chart; snapshots (followers, lifetime views) sit at the end.
-function renderStats() {
-  const box = document.getElementById("stats");
-  box.replaceChildren();
-  if (!DATA.headlines.length) {
-    box.append(el("p", { class: "empty stat" }, "No metrics yet. Collect them with: uv run python -m metrics.collect --report"));
-    return;
+// One KPI card: label, value, and change. A number with a series is a button that puts it on the timeline.
+function kpiCard(number, label = number.label) {
+  const chart = CHARTS.get(number.key);
+  const title = [number.description, `${sourceName(number.source)} · ${number.basis}`, chart ? "Click to chart it" : ""].filter(Boolean).join("\n");
+  const card = tint(el(chart ? "button" : "div", { class: "kpi", title }), number.source);
+  const head = el("span", { class: "k-label" });
+  head.append(sourceDot(number.source), el("span", {}, label));
+  const r = chart ? reading(chart, number) : { value: number.current, previous: number.previous, compare: number.basis, basis: number.basis };
+  card.append(head, el("span", { class: "k-value" }, r.change ? fmtSigned(r.value, number.metric) : fmt(r.value, number.metric)), metaLine(r));
+  if (chart) {
+    card.type = "button";
+    card.dataset.key = number.key;
+    card.setAttribute("aria-pressed", String(number.key === state.key));
+    card.addEventListener("click", () => selectChart(number.key));
   }
-  const daily = DATA.headlines.filter((h) => CHARTS.has(`${h.source}.${h.metric}`));
-  const snapshots = DATA.headlines.filter((h) => !CHARTS.has(`${h.source}.${h.metric}`));
-  for (const h of [...daily, ...snapshots]) {
-    const key = `${h.source}.${h.metric}`;
-    const chart = CHARTS.get(key);
-    const stat = tint(el(chart ? "button" : "div", { class: "stat", title: [h.description, `${h.source} · ${h.basis}`].filter(Boolean).join("\n") }), h.source);
-    const label = el("span", { class: "s-label" });
-    label.append(sourceDot(h.source), el("span", {}, h.label));
-    stat.append(label);
-    if (chart) {
-      stat.type = "button";
-      stat.dataset.key = key;
-      stat.setAttribute("aria-pressed", String(key === state.key));
-      stat.addEventListener("click", () => selectChart(key));
-      const t = windowTotals(chart, h);
-      stat.append(el("span", { class: "s-value" }, fmt(t.current, h.metric)),
-        metaLine(t.current, t.previous, t.note || `last ${state.range} days`, `vs prev ${state.range}d`));
-    } else {
-      if (h === snapshots[0]) stat.classList.add("first-static");
-      stat.append(el("span", { class: "s-value" }, fmt(h.current, h.metric)), metaLine(h.current, h.previous, "latest", h.basis));
-    }
-    box.append(stat);
-  }
-  // On narrow screens the strip scrolls sideways; bring the selected tab into view without moving the page.
-  const selected = box.querySelector('[aria-pressed="true"]');
-  if (selected && selected.offsetLeft + selected.offsetWidth > box.clientWidth) box.scrollLeft = selected.offsetLeft - 16;
+  return card;
 }
 
-/* ---------- timeline (signature) ---------- */
+// A platform's numbers: headline first, then daily totals, account counts, and per-item totals.
+function platformNumbers(source) {
+  const rank = (n) => (n.headline ? 0 : 3) + (n.granularity === "day" ? 0 : n.entity_type === "account" ? 1 : 2);
+  return DATA.numbers.filter((n) => n.source === source).sort((a, b) => rank(a) - rank(b));
+}
 
+// The platform tab's KPI row: every number the platform collects.
+function renderKpis() {
+  const box = document.getElementById("kpis");
+  box.replaceChildren();
+  if (state.tab === "overview") return;
+  const numbers = platformNumbers(state.tab);
+  if (!numbers.length) box.append(el("p", { class: "empty" }, `Nothing collected from ${sourceName(state.tab)} yet.`));
+  for (const n of numbers) box.append(kpiCard(n, shortLabel(n.label, n.source)));
+}
+
+/* ---------- overview: one card per platform (the KPI row) ---------- */
+
+// Built once; each refresh replaces the numbers and updates the sparkline in place.
+const CARDS = new Map();
+function buildPlatformCards() {
+  const box = document.getElementById("platforms");
+  if (!DATA.platforms.length) {
+    box.append(el("p", { class: "empty" }, "No metrics yet. Collect them with: uv run python -m metrics.collect --report"));
+    return;
+  }
+  for (const p of DATA.platforms) {
+    const run = RUNS[p.source] || {}, failing = run.last_run_status === "failed";
+    const card = tint(el("article", { class: `pcard${failing ? " failing" : ""}`, "aria-label": sourceName(p.source) }), p.source);
+    const head = el("div", { class: "p-head" }), name = el("span", { class: "p-name" });
+    name.append(sourceDot(p.source), el("span", {}, sourceName(p.source)));
+    head.append(name, el("a", { class: "p-go", href: `#${p.source}`, "aria-label": `All ${sourceName(p.source)} numbers` }, "All numbers →"));
+    const nums = el("div", { class: "p-nums" });
+    const spark = el("div", { class: "spark" }), canvas = el("canvas", { "aria-hidden": "true" });
+    spark.append(canvas);
+    const foot = el("div", { class: "p-foot" });
+    const since = FIRST_DAY[p.source] ? `data since ${shortDate(FIRST_DAY[p.source])}` : "no data yet";
+    const ran = run.last_run_at ? `${run.last_run_status || "ran"} · ${runTime(run.last_run_at).slice(5)}` : "never run";
+    foot.append(el("span", {}, since), el("span", { class: failing ? "bad" : "" }, ran));
+    card.append(head, el("p", { class: "p-desc", title: p.description }, p.description || ""), nums, spark, foot);
+    box.append(card);
+    CARDS.set(p.source, { nums, canvas });
+  }
+}
+
+// A card shows the platform's first three numbers (headline first); its sparkline is the platform's opening series.
+function renderPlatformCards() {
+  for (const [source, { nums, canvas }] of CARDS) {
+    nums.replaceChildren();
+    const numbers = platformNumbers(source).slice(0, 3);
+    if (!numbers.length) nums.append(el("p", { class: "empty" }, "Nothing collected yet."));
+    for (const n of numbers) nums.append(kpiCard(n, shortLabel(n.label, source)));
+    const chart = CHARTS.get(defaultKey(source));
+    if (chart) sparkline(canvas, chart);
+  }
+}
+
+// A small picture of one series over the range: bars for daily numbers, a line for running totals, the stretch shaded.
+function sparkline(canvas, chart) {
+  const values = valuesOf(visibleSeries(chart)), colour = sourceColor(chart.source), day = chart.kind === "day";
+  const spark = upsertChart(canvas, {
+    type: day ? "bar" : "line",
+    data: { labels: visibleDates(), datasets: [{
+      data: values, backgroundColor: day ? alpha(colour, 0.75) : alpha(colour, 0.1), borderColor: colour,
+      borderWidth: day ? 0 : 1.5, pointRadius: 0, fill: !day, tension: 0.3, barPercentage: 0.8, categoryPercentage: 1,
+    }] },
+    options: {
+      events: [], layout: { padding: 1 },
+      scales: { x: { display: false }, y: { display: false, beginAtZero: day } },
+      plugins: { tooltip: { enabled: false } },
+    },
+  });
+  spark.$overlay = { stretch: state.selection };
+  spark.draw();
+}
+
+/* ---------- filters: range and measured stretch ---------- */
+
+function renderRange() {
+  const seg = document.getElementById("range");
+  for (const days of RANGES) {
+    const b = el("button", { type: "button", "aria-pressed": String(days === state.range), "aria-label": `Last ${days} days` }, `${days}D`);
+    b.dataset.days = days;
+    b.addEventListener("click", () => {
+      state.range = days;
+      state.hover = state.selection = null;
+      seg.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(Number(x.dataset.days) === days)));
+      refresh();
+    });
+    seg.append(b);
+  }
+  // The stretch chip names the measured stretch and clears it.
+  document.getElementById("stretch-chip").addEventListener("click", () => { state.selection = null; refresh(); });
+}
+
+// Everything the filters drive, redrawn together on the next frame (one redraw however many inputs changed).
+let refreshQueued = false;
+function refresh() {
+  if (refreshQueued) return;
+  refreshQueued = true;
+  requestAnimationFrame(() => {
+    refreshQueued = false;
+    const chip = document.getElementById("stretch-chip");
+    chip.hidden = !state.selection;
+    if (state.selection) {
+      chip.replaceChildren(el("span", {}, `Stretch ${stretchLabel(state.selection)}`), " ✕");
+      chip.setAttribute("aria-label", `Clear the measured stretch, ${stretchLabel(state.selection)}`);
+    }
+    renderKpis();
+    renderPlatformCards();
+    renderTimeline();
+    renderCompare();
+    if (activeTable) {
+      activeTable.redraw();
+      activeTable.updateNote();
+    }
+  });
+}
+
+/* ---------- timeline: the primary chart ---------- */
+
+// Switching metrics keeps the measured stretch: the same days, read on another series.
 function selectChart(key) {
   state.key = key;
-  state.selection = null;
-  document.querySelectorAll("#stats button.stat").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.key === key)));
+  document.querySelectorAll("[data-key]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.key === key)));
   renderTimeline();
 }
 
-// Headline metrics are switched from the strip; this menu holds the rest of the daily metrics.
+// The menu lists every series of the open tab (every platform's on the overview), grouped by platform.
 function renderPicker() {
   const select = document.getElementById("metric");
-  const rest = DATA.charts.filter((c) => !c.headline);
-  if (!rest.length) { document.getElementById("more-wrap").hidden = true; return; }
-  select.append(el("option", { value: "" }, "more metrics"));
-  for (const c of rest) select.append(el("option", { value: chartKey(c) }, `${c.label} · ${c.source}`));
-  select.addEventListener("change", () => { if (select.value) selectChart(select.value); });
+  select.replaceChildren();
+  for (const source of PLATFORM_NAMES) {
+    if (state.tab !== "overview" && source !== state.tab) continue;
+    const charts = [...CHARTS.values()].filter((c) => c.source === source)
+      .sort((a, b) => (b.headline - a.headline) || (a.kind === b.kind ? 0 : a.kind === "day" ? -1 : 1));
+    if (!charts.length) continue;
+    const group = el("optgroup", { label: sourceName(source) });
+    for (const c of charts) {
+      const scope = c.kind === "snapshot" && c.entity_type !== "account" ? ` · all ${c.entity_type}s` : "";
+      group.append(el("option", { value: c.key }, `${c.label}${scope}`));
+    }
+    select.append(group);
+  }
+}
+
+// The open chart's visible values and where its data starts; shared by the chart, the readout, and the facts.
+function timelineView() {
+  const chart = CHARTS.get(state.key);
+  if (!chart) return null;
+  const dates = visibleDates(), values = valuesOf(visibleSeries(chart));
+  return { chart, dates, values, n: values.length, offFrom: collectedFrom(chart, dates) };
+}
+
+// A panel with nothing to show keeps only its message: no menu, toggle, or empty chart area.
+function showParts(ids, visible) {
+  for (const id of ids) document.getElementById(id).hidden = !visible;
 }
 
 function renderTimeline() {
-  const track = document.getElementById("track");
-  const chart = CHARTS.get(state.key);
-  track.replaceChildren();
-  if (!chart) {
-    document.getElementById("readout").textContent = "No daily data yet. Once a collector runs, its daily numbers appear here.";
+  const canvas = document.getElementById("timeline"), view = timelineView();
+  document.getElementById("metric").value = state.key || "";
+  showParts(["metric-wrap", "track", "daylog", "facts"], Boolean(view));
+  if (!view) {
+    Chart.getChart(canvas)?.destroy();
+    showParts(["mode", "track-key"], false);
+    document.getElementById("readout").textContent = "Nothing to chart yet. Once a collector runs, its numbers appear here.";
     return;
   }
-  // The menu shows the metric only when it isn't one of the strip's tabs.
-  const select = document.getElementById("metric");
-  select.value = chart.headline ? "" : state.key;
-  document.getElementById("more-wrap").classList.toggle("active", !chart.headline);
-  tint(track, chart.source);
-  const dates = visibleDates(), values = visibleSeries(chart).map(([, v]) => v);
-  const n = values.length, offFrom = collectedFrom(chart.source, dates);
-  track.setAttribute("aria-label", `${chart.label} per day, last ${n} days. Hover or use arrow keys to read a day.`);
+  const { chart, dates, values, n, offFrom } = view, snapshot = chart.kind === "snapshot";
+  const colour = sourceColor(chart.source), metric = chart.metric;
+  canvas.setAttribute("aria-label", `${chart.label}, ${snapshot ? "running total by day" : "per day"}, ${spanLabel()}.`);
+  document.getElementById("mode").hidden = snapshot;
+  const cumulative = !snapshot && state.mode === "cumulative";
+  const shown = values.map((v, i) => (i < offFrom ? null : v));
+  const inStretch = (i) => !state.selection || (i >= state.selection[0] && i <= state.selection[1]);
 
-  // Daily: bars from a baseline plus a 7-day average line. Cumulative: the running total as a filled line.
-  const cumulative = state.mode === "cumulative";
-  const shown = cumulative ? runningTotal(values, offFrom) : values;
-  const ticks = niceTicks(Math.max(...shown)), top = ticks[ticks.length - 1];
-  const W = 1000, H = 250, HEADROOM = 22, step = W / n;
-  const y = (v) => H - (v / top) * (H - HEADROOM);
-  const x = (i) => (i + 0.5) * step;
-  const svg = el("svg:svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", "aria-hidden": "true" });
-  if (!state.animated && !cumulative) svg.classList.add("sweep");
-  for (const t of ticks) svg.append(el("svg:line", { class: "grid", x1: 0, x2: W, y1: y(t), y2: y(t), "vector-effect": "non-scaling-stroke" }));
-  if (cumulative) {
-    const pts = shown.map((v, i) => [x(i), y(v)]).slice(offFrom);
-    if (pts.length) {
-      const line = pts.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join("");
-      svg.append(el("svg:path", { class: "area", d: `${line}L${pts[pts.length - 1][0]},${H}L${pts[0][0]},${H}Z` }),
-        el("svg:path", { class: "cum", d: line, "vector-effect": "non-scaling-stroke" }));
-    }
+  // Daily: bars plus a 7-day average line. Cumulative: the running total, filled. Running totals
+  // (snapshots) are already levels: always a line, on an axis fitted to their own range, ending in a dot.
+  let datasets;
+  if (cumulative || snapshot) {
+    const line = cumulative ? runningTotal(values, offFrom) : shown;
+    const last = line.length - 1;
+    datasets = [{
+      type: "line", label: chart.label, data: line, borderColor: colour, backgroundColor: alpha(colour, 0.14),
+      borderWidth: 2, fill: snapshot ? "start" : "origin", tension: 0.25, spanGaps: false,
+      pointRadius: (ctx) => (snapshot && ctx.dataIndex === last ? 3.5 : 0), pointBackgroundColor: colour, pointHoverRadius: 4,
+    }];
   } else {
-    values.forEach((v, i) => {
-      if (i < offFrom) return;
-      const h = Math.max(v > 0 ? 1.5 : 0, (v / top) * (H - HEADROOM));
-      svg.append(el("svg:rect", {
-        class: "bar", x: i * step + step * 0.18, width: Math.max(0.8, step * 0.64), y: H - h, height: h,
-        style: `--d:${(i / n).toFixed(3)}`,
-      }));
-    });
-    const avg = trailingAverage(values, offFrom);
-    const avgPts = avg.map((v, i) => (v === null ? null : `${x(i).toFixed(1)},${y(v).toFixed(1)}`)).filter(Boolean);
-    if (avgPts.length > 1) svg.append(el("svg:path", { class: "avg", d: `M${avgPts.join("L")}`, "vector-effect": "non-scaling-stroke" }));
+    datasets = [
+      { type: "bar", label: chart.label, data: shown, order: 2, borderRadius: 1, barPercentage: 0.7, categoryPercentage: 0.95,
+        backgroundColor: (ctx) => (inStretch(ctx.dataIndex) ? colour : alpha(colour, 0.35)) },
+      { type: "line", label: "7-day average", data: trailingAverage(values, offFrom), order: 1, borderColor: alpha(COLORS.ink, 0.7),
+        borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0, tension: 0.3, spanGaps: false },
+    ];
   }
-  // The legend for the average line shows only while that line is drawn.
-  document.getElementById("track-key").hidden = !svg.querySelector(".avg");
-  state.animated = true;
-  track.prepend(svg);
-
-  // Value labels for the gridlines, in HTML so they never stretch with the chart.
-  const ylabels = el("div", { class: "ylabels", "aria-hidden": "true" });
-  for (const t of ticks.slice(1)) {
-    const label = el("span", {}, fmt(t, chart.metric));
-    label.style.top = `${(y(t) / H) * 100}%`;
-    ylabels.append(label);
-  }
-  track.append(ylabels);
-
-  // Days before the source began collecting: hatched, labelled when there's room.
-  if (offFrom > 0) {
-    const shade = el("div", { class: "nodata" });
-    shade.style.width = `${(offFrom / n) * 100}%`;
-    if (offFrom / n > 0.16) shade.append(el("span", {}, `not collected before ${shortDate(FIRST_DAY[chart.source])}`));
-    track.append(shade);
-  }
-
-  // Overlays for the measured stretch and the playhead; positioned in updateScrub().
-  track.append(el("div", { class: "selection", hidden: "" }), el("div", { class: "playhead", hidden: "" }));
-
-  // Cue flags: one per day with releases or thumbnail changes; a number when several land together.
-  const cues = el("div", { class: "cues" });
+  const timeline = upsertChart(canvas, {
+    type: "bar",
+    data: { labels: dates, datasets },
+    options: {
+      interaction: { mode: "index", intersect: false },
+      onHover: (ev, items, ch) => setHover(ev.type === "mouseout" ? null : indexAt(ch, ev.x)),
+      layout: { padding: { top: 14 } },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 18, callback(v) { return shortDate(this.getLabelForValue(v)); } } },
+        y: { beginAtZero: !snapshot, grace: snapshot ? "8%" : 0, border: { display: false }, grid: { color: COLORS.rule },
+             ticks: { maxTicksLimit: 5, callback: (v) => fmt(v, metric) } },
+      },
+      plugins: { tooltip: { callbacks: {
+        title: (items) => dayName(items[0].label),
+        label: (ctx) => (ctx.raw === null ? null : `${ctx.dataset.label}: ${fmt(ctx.raw, metric)}${cumulative ? " so far" : ""}`),
+        footer: (items) => eventsOn(items[0].label, chart).map((e) => (e.kind === "release" ? "▲ " : "◆ ") + e.label),
+      } } },
+    },
+  });
+  const events = [];
   dates.forEach((d, i) => {
-    const events = EVENTS_BY_DATE.get(d);
-    if (!events) return;
-    const kind = events.some((e) => e.kind === "release") ? "release" : "thumbnail";
-    const flag = el("button", { type: "button", class: `cue ${kind}`, "aria-label": `${shortDate(d)}: ${events.map((e) => e.label).join("; ")}` });
-    flag.style.left = `${((i + 0.5) / n) * 100}%`;
-    flag.append(el("span", { class: "head", "aria-hidden": "true" }, events.length > 1 ? String(events.length) : ""));
-    const show = () => { state.playhead = i; updateScrub(); };
-    flag.addEventListener("mouseenter", show);
-    flag.addEventListener("focus", show);
-    flag.addEventListener("click", (ev) => { ev.stopPropagation(); state.selection = null; show(); });
-    flag.addEventListener("pointerdown", (ev) => ev.stopPropagation());
-    cues.append(flag);
+    const list = eventsOn(d, chart);
+    if (list.length) events.push({ index: i, count: list.length, kind: list.some((e) => e.kind === "release") ? "release" : "thumbnail" });
   });
-  track.append(cues);
-
-  renderAxis(dates);
-  renderRail(chart, dates, values, offFrom);
-  updateScrub();
+  timeline.$overlay = {
+    offFrom, events, stretch: state.selection,
+    hatchLabel: `${snapshot ? "no readings before" : "not collected before"} ${chart.first ? shortDate(chart.first) : ""}`,
+  };
+  timeline.draw();
+  document.getElementById("track-key").hidden = cumulative || snapshot;
+  renderFacts(view);
+  updateReadout();
+  // Redrawing drops the tooltip; put it back on the day a keyboard user is reading.
+  if (state.hover !== null && document.activeElement === document.getElementById("track")) showDay(state.hover);
 }
 
-/* ---------- side rail: derived numbers for the selected metric ---------- */
-
-// Ratios of two daily metrics from the same source (never mixed across sources), over the visible range.
-const RATIOS = [
-  { label: "Watch time per view", num: "youtube.watch_minutes", den: "youtube.views", scale: 1, unit: " min" },
-  { label: "Subscribers per 1k views", num: "youtube.subscribers_gained", den: "youtube.views", scale: 1000, unit: "" },
-];
-
-function railRows(title, rows, note) {
-  const box = el("div");
-  box.append(el("h3", { class: "label" }, title));
-  const dl = el("dl");
-  for (const [label, value] of rows) {
-    const row = el("div", { class: "rail-row" });
-    const dd = el("dd");
-    dd.append(value);
-    row.append(el("dt", {}, label), dd);
-    dl.append(row);
-  }
-  box.append(dl);
-  if (note) box.append(el("p", { class: "rail-note" }, note));
-  return box;
+// The visible-day index under a pixel x position on the chart.
+function indexAt(chart, px) {
+  const n = chart.data.labels.length;
+  if (!n || !Number.isFinite(px)) return null;
+  return Math.min(n - 1, Math.max(0, Math.round(chart.scales.x.getValueForPixel(px))));
 }
 
-function renderRail(chart, dates, values, offFrom) {
-  const rail = document.getElementById("rail");
-  rail.replaceChildren();
-  tint(rail, chart.source);
-  const collected = values.slice(offFrom), days = collected.length;
-
-  // The selected metric: typical day, current pace, and this week against last.
-  const rows = [["Days with data", `${days} of ${values.length}`]];
-  if (days) rows.push(["Daily average", fmt(sum(collected) / days, chart.metric)]);
-  if (days >= 7) rows.push(["Last 7 days, per day", fmt(sum(collected.slice(-7)) / 7, chart.metric)]);
-  let note = null;
-  if (days >= 14) {
-    const thisWeek = sum(collected.slice(-7)), lastWeek = sum(collected.slice(-14, -7));
-    if (lastWeek > 0) {
-      const pct = Math.round(((thisWeek - lastWeek) / lastWeek) * 100);
-      rows.push(["This week vs last", el("span", { class: `delta ${pct >= 0 ? "up" : "down"}` }, `${pct >= 0 ? "↑" : "↓"} ${Math.abs(pct)}%`)]);
-    }
-  } else {
-    note = "Week-over-week and weekday patterns appear after 14 days of data.";
-  }
-  rail.append(railRows(chart.label, rows, note));
-
-  // Best weekday: average per weekday over collected days, as seven small bars (Monday first).
-  if (days >= 14) {
-    const totals = Array(7).fill(0), counts = Array(7).fill(0);
-    dates.slice(offFrom).forEach((d, i) => {
-      const wd = (new Date(`${d}T00:00:00Z`).getUTCDay() + 6) % 7;
-      totals[wd] += collected[i];
-      counts[wd] += 1;
-    });
-    const avgs = totals.map((t, i) => (counts[i] ? t / counts[i] : 0)), max = Math.max(1e-9, ...avgs), best = avgs.indexOf(Math.max(...avgs));
-    const names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    const box = el("div");
-    box.append(el("h3", { class: "label" }, `Best weekday · ${names[best]}`));
-    const svg = el("svg:svg", { class: "week-bars", viewBox: "0 0 70 64", preserveAspectRatio: "none", role: "img",
-      "aria-label": names.map((n, i) => `${n} ${fmt(avgs[i], chart.metric)}`).join(", ") });
-    avgs.forEach((v, i) => {
-      const h = Math.max(1, (v / max) * 60);
-      svg.append(el("svg:rect", { class: i === best ? "best" : "", x: i * 10 + 2, width: 6, y: 64 - h, height: h, rx: 1 }));
-    });
-    const labels = el("div", { class: "week-days", "aria-hidden": "true" });
-    names.forEach((n) => labels.append(el("span", {}, n[0])));
-    box.append(svg, labels, el("p", { class: "rail-note" }, `${fmt(avgs[best], chart.metric)} per ${names[best]} on average`));
-    rail.append(box);
-  }
-
-  // Ratios between metrics, when both sides exist and the denominator isn't zero.
-  const ratioRows = RATIOS.flatMap((r) => {
-    const a = CHARTS.get(r.num), b = CHARTS.get(r.den);
-    if (!a || !b) return [];
-    const den = sum(visibleSeries(b).map(([, v]) => v));
-    return den ? [[r.label, `${fmt((sum(visibleSeries(a).map(([, v]) => v)) / den) * r.scale)}${r.unit}`]] : [];
-  });
-  if (ratioRows.length) rail.append(railRows(`Derived · last ${state.range} days`, ratioRows));
+function setHover(i) {
+  if (i === state.hover) return;
+  state.hover = i;
+  updateReadout();
 }
 
-function wireMode() {
-  document.querySelectorAll("#mode button").forEach((b) => b.addEventListener("click", () => {
-    state.mode = b.dataset.mode;
-    state.selection = null;
-    document.querySelectorAll("#mode button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
-    renderTimeline();
-  }));
-}
-
-// Axis labels live in HTML, not the stretched SVG, so text never distorts on narrow screens.
-function renderAxis(dates) {
-  const axis = document.getElementById("axis");
-  axis.replaceChildren();
-  const n = dates.length;
-  // First and last day, plus week or month starts that don't crowd a neighbour.
-  const marks = dates.map((d, i) => ({ d, pct: ((i + 0.5) / n) * 100, edge: i === 0 || i === n - 1 }))
-    .filter((t) => t.edge || (n <= 31 ? new Date(`${t.d}T00:00:00Z`).getUTCDay() === 1 : t.d.endsWith("-01")));
-  const kept = marks.filter((t) => t.edge || marks.every((o) => !o.edge || Math.abs(o.pct - t.pct) >= 9));
-  for (const t of kept) {
-    const span = el("span", {}, shortDate(t.d));
-    span.style.left = `${t.pct}%`;
-    if (t.pct < 5) span.classList.add("start");
-    if (t.pct > 95) span.classList.add("end");
-    axis.append(span);
-  }
-}
-
-// Moves the playhead and selection, then rewrites the readout and the event chips below the chart.
-function updateScrub() {
-  const chart = CHARTS.get(state.key);
-  if (!chart) return;
-  const dates = visibleDates(), values = visibleSeries(chart).map(([, v]) => v), n = dates.length;
-  const playhead = document.querySelector("#track .playhead"), sel = document.querySelector("#track .selection");
-  playhead.hidden = state.playhead === null;
-  if (state.playhead !== null) playhead.style.left = `${((state.playhead + 0.5) / n) * 100}%`;
-  sel.hidden = !state.selection;
-  if (state.selection) {
-    const [a, b] = state.selection;
-    sel.style.left = `${(a / n) * 100}%`;
-    sel.style.width = `${((b - a + 1) / n) * 100}%`;
-  }
-
-  const readout = document.getElementById("readout"), log = document.getElementById("daylog");
+// Rewrites the readout above the chart and the release chips below it, for the hovered day, the stretch, or the range.
+function updateReadout() {
+  const view = timelineView(), readout = document.getElementById("readout"), log = document.getElementById("daylog");
+  if (!view) return;
   readout.replaceChildren();
   log.replaceChildren();
-  const label = chart.label.toLowerCase(), offFrom = collectedFrom(chart.source, dates);
-  let logEvents;
-  if (state.selection) {
-    // A measured stretch: total and average per day, and what happened inside it.
-    const [a, b] = state.selection, days = b - a + 1, total = sum(values.slice(a, b + 1));
-    readout.append(el("span", { class: "r-main" }, `${fmt(total, chart.metric)} ${label}`),
-      el("span", { class: "r-sub" }, `${shortDate(dates[a])} – ${shortDate(dates[b])} · ${days} days · ${fmt(total / days, chart.metric)}/day`));
-    logEvents = dates.slice(a, b + 1).flatMap((d) => EVENTS_BY_DATE.get(d) || []);
-    log.append(el("span", {}, logEvents.length ? "in this stretch" : "nothing released in this stretch · esc clears"));
-  } else if (state.playhead !== null) {
-    // One day under the playhead (cumulative view: the running total up to that day).
-    const i = state.playhead, d = dates[i];
-    const reading = state.mode === "cumulative" ? `${fmt(runningTotal(values, offFrom)[i], chart.metric)} ${label} so far` : `${fmt(values[i], chart.metric)} ${label}`;
-    readout.append(el("span", { class: "r-main" }, i < offFrom ? "not collected" : reading),
-      el("span", { class: "r-sub" }, dayName(d)));
-    logEvents = EVENTS_BY_DATE.get(d) || [];
-    if (logEvents.length) readout.append(el("span", { class: "r-cue" }, `${logEvents.length} event${logEvents.length > 1 ? "s" : ""} this day`));
-    log.append(el("span", {}, logEvents.length ? "on this day" : "drag across the chart to measure a stretch"));
+  const { chart, dates, values, n, offFrom } = view, metric = chart.metric, label = chart.label.toLowerCase();
+  const main = (text) => readout.append(el("span", { class: "r-main" }, text));
+  const sub = (text, cls = "r-sub") => readout.append(el("span", { class: cls }, text));
+  const sel = state.selection, at = (i) => (i < offFrom ? null : values[i]);
+  const cumulative = state.mode === "cumulative" && chart.kind === "day";
+  let logEvents, lead;
+  if (sel) {
+    const [a, b] = sel;
+    if (chart.kind === "snapshot") {
+      const { base, end, value } = levelChange(chart, sel);
+      main(`${fmtSigned(value, metric)} ${label}`);
+      sub(`${stretchLabel(sel)} · ${fmt(base, metric)} → ${fmt(end, metric)}`);
+    } else {
+      const days = b - a + 1, total = sum(values.slice(a, b + 1));
+      main(`${fmt(total, metric)} ${label}`);
+      sub(`${stretchLabel(sel)} · ${days} days · ${fmt(total / days, metric)}/day`);
+    }
+    logEvents = dates.slice(a, b + 1).flatMap((d) => eventsOn(d, chart));
+    lead = logEvents.length ? "in this stretch" : "nothing released in this stretch · esc or the ✕ clears it";
+  } else if (state.hover !== null) {
+    const i = state.hover, v = cumulative ? runningTotal(values, offFrom)[i] : at(i);
+    const missing = chart.kind === "snapshot" ? "no reading yet" : "not collected";
+    main(v === null ? missing : `${fmt(v, metric)} ${label}${cumulative ? " so far" : ""}`);
+    sub(dayName(dates[i]));
+    logEvents = eventsOn(dates[i], chart);
+    if (logEvents.length) sub(`${logEvents.length} event${logEvents.length > 1 ? "s" : ""} this day`, "r-cue");
+    lead = logEvents.length ? "on this day" : "drag across the chart to measure a stretch";
   } else {
-    // Resting state: the range at a glance, and the most recent cues to jump to.
-    const total = sum(values), peak = Math.max(...values), peakDay = dates[values.indexOf(peak)];
-    readout.append(el("span", { class: "r-main" }, `${fmt(total, chart.metric)} ${label}`),
-      el("span", { class: "r-sub" }, peak > 0 ? `last ${n} days · best day ${shortDate(peakDay)} (${fmt(peak, chart.metric)})` : `last ${n} days`));
-    logEvents = dates.flatMap((d) => EVENTS_BY_DATE.get(d) || []).reverse();
-    log.append(el("span", {}, logEvents.length ? "recent" : "hover to read a day · drag to measure a stretch"));
+    // Resting: the range at a glance (a level and how far it moved, or a total and the best day), then recent events.
+    if (chart.kind === "snapshot") {
+      const last = values[n - 1], first = at(offFrom);
+      main(`${fmt(last, metric)} ${label}`);
+      sub(offFrom < n - 1 ? `latest · ${fmtSigned(last - first, metric)} since ${shortDate(dates[offFrom])}` : "latest");
+    } else {
+      const total = sum(values), peak = Math.max(...values), peakDay = dates[values.indexOf(peak)];
+      main(`${fmt(total, metric)} ${label}`);
+      sub(peak > 0 ? `last ${n} days · best day ${shortDate(peakDay)} (${fmt(peak, metric)})` : `last ${n} days`);
+    }
+    logEvents = dates.flatMap((d) => eventsOn(d, chart)).reverse();
+    lead = logEvents.length ? "recent" : "hover to read a day · drag to measure a stretch";
   }
+  log.append(el("span", {}, lead));
   // One chip per day and kind ("Oct 28 · 6 new thumbnails"), newest first; the tooltip lists each one.
   const groups = new Map();
   for (const e of logEvents) groups.set(`${e.date}|${e.kind}`, [...(groups.get(`${e.date}|${e.kind}`) || []), e]);
@@ -924,57 +1048,241 @@ function updateScrub() {
       : kind === "release" ? splitTitle(events[0].label).guest : `new thumbnail · ${splitTitle(events[0].label.replace(/^New thumbnail: /, "")).guest}`;
     const chip = el("button", { type: "button", class: `chip ${kind}`, title: events.map((e) => e.label).join("\n") });
     chip.append(el("span", { class: "k", "aria-hidden": "true" }), el("span", {}, `${shortDate(date)} · ${what}`));
-    chip.addEventListener("click", () => { state.selection = null; state.playhead = dates.indexOf(date); updateScrub(); });
+    chip.addEventListener("click", () => { state.selection = null; showDay(dates.indexOf(date)); refresh(); });
     log.append(chip);
   }
   if (groups.size > shown.length) log.append(el("span", {}, `+${groups.size - shown.length} more days`));
 }
 
-// Pointer and keyboard scrubbing on the timeline.
-function wireTrack() {
-  const track = document.getElementById("track");
+// Puts the tooltip on one day, for keyboard users and the release chips.
+function showDay(i) {
+  const timeline = Chart.getChart(document.getElementById("timeline"));
+  if (!timeline || i === null || i < 0) return;
+  const active = timeline.data.datasets.map((d, datasetIndex) => ({ datasetIndex, index: i })).filter((e) => timeline.data.datasets[e.datasetIndex].data[i] != null);
+  timeline.setActiveElements(active);
+  timeline.tooltip.setActiveElements(active, { x: timeline.scales.x.getPixelForValue(i), y: timeline.chartArea.top });
+  timeline.update("none");
+  setHover(i);
+}
+
+// Pointer: hover reads a day (via Chart.js), dragging measures a stretch; letting go applies it as a filter everywhere.
+// Keyboard: arrows move a day, shift+arrows measure, Escape clears.
+function wireTimeline() {
+  const track = document.getElementById("track"), canvas = document.getElementById("timeline");
   let anchor = null;
-  const indexAt = (ev) => {
-    const r = track.getBoundingClientRect();
-    return Math.min(state.range - 1, Math.max(0, Math.floor(((ev.clientX - r.left) / r.width) * state.range)));
+  const at = (ev) => {
+    const chart = Chart.getChart(canvas);
+    return chart ? indexAt(chart, ev.clientX - canvas.getBoundingClientRect().left) : null;
   };
-  track.addEventListener("pointerdown", (ev) => {
-    if (!CHARTS.get(state.key)) return;
-    anchor = indexAt(ev);
+  const drawStretch = () => {
+    const chart = Chart.getChart(canvas);
+    if (!chart) return;
+    chart.$overlay.stretch = state.selection;
+    chart.update("none");
+    updateReadout();
+  };
+  canvas.addEventListener("pointerdown", (ev) => {
+    anchor = at(ev);
+    if (anchor === null) return;
     state.selection = null;
-    state.playhead = anchor;
-    track.setPointerCapture(ev.pointerId);
-    updateScrub();
+    canvas.setPointerCapture(ev.pointerId);
+    drawStretch();
   });
-  track.addEventListener("pointermove", (ev) => {
-    if (!CHARTS.get(state.key)) return;
-    const i = indexAt(ev);
-    state.playhead = i;
-    if (anchor !== null && i !== anchor) state.selection = [Math.min(anchor, i), Math.max(anchor, i)];
-    updateScrub();
+  canvas.addEventListener("pointermove", (ev) => {
+    if (anchor === null) return;
+    const i = at(ev);
+    state.selection = i === anchor ? null : [Math.min(anchor, i), Math.max(anchor, i)];
+    drawStretch();
   });
-  track.addEventListener("pointerup", () => { anchor = null; });
-  track.addEventListener("pointerleave", () => {
-    if (anchor !== null) return;
-    state.playhead = null;
-    updateScrub();
-  });
+  canvas.addEventListener("pointerup", () => { if (anchor !== null) { anchor = null; refresh(); } });
+  canvas.addEventListener("pointerleave", () => { if (anchor === null) setHover(null); });
   track.addEventListener("keydown", (ev) => {
-    const last = state.range - 1;
-    const at = state.playhead ?? last;
-    const moves = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: last };
-    if (ev.key === "Escape") { state.selection = null; state.playhead = null; updateScrub(); return; }
+    const last = state.range - 1, from = state.hover ?? last;
+    const moves = { ArrowLeft: from - 1, ArrowRight: from + 1, Home: 0, End: last };
+    if (ev.key === "Escape") { state.selection = state.hover = null; refresh(); return; }
     if (!(ev.key in moves)) return;
     ev.preventDefault();
     const next = Math.min(last, Math.max(0, moves[ev.key]));
     if (ev.shiftKey) {
-      const [a, b] = state.selection || [at, at];
-      state.selection = next < a ? [next, b] : next > b ? [a, next] : at === a ? [next, b] : [a, next];
-    } else {
-      state.selection = null;
+      const [a, b] = state.selection || [from, from];
+      state.selection = next < a ? [next, b] : next > b ? [a, next] : from === a ? [next, b] : [a, next];
+      refresh();
     }
-    state.playhead = next;
-    updateScrub();
+    showDay(next);
+  });
+  document.querySelectorAll("#mode button").forEach((b) => b.addEventListener("click", () => {
+    state.mode = b.dataset.mode;
+    document.querySelectorAll("#mode button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    renderTimeline();
+  }));
+  document.getElementById("metric").addEventListener("change", (ev) => selectChart(ev.target.value));
+}
+
+/* ---------- derived numbers under the timeline ---------- */
+
+// Ratios of two daily metrics from the same source (never mixed across sources), over the filtered days.
+const RATIOS = [
+  { label: "Watch time per view", num: "youtube.watch_minutes.show", den: "youtube.views.show", scale: 1, unit: " min" },
+  { label: "Subscribers per 1k views", num: "youtube.subscribers_gained.show", den: "youtube.views.show", scale: 1000, unit: "" },
+];
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function renderFacts({ chart, dates, values, offFrom }) {
+  const box = document.getElementById("facts");
+  box.replaceChildren();
+  const rows = [];
+  let note = null;
+  const collected = values.slice(offFrom);
+  if (chart.kind === "snapshot") {
+    // A running total: where it stands, how far it moved, and what it adds up.
+    const last = collected[collected.length - 1];
+    rows.push(["Latest", fmt(last, chart.metric)], ["First reading", chart.first ? shortDate(chart.first) : "–"]);
+    if (collected.length > 1) rows.push([`Change since ${shortDate(dates[offFrom])}`, fmtSigned(last - collected[0], chart.metric)]);
+    if (collected.length > 7) rows.push(["Change, last 7 days", fmtSigned(last - collected[collected.length - 8], chart.metric)]);
+    if (chart.entity_type !== "account") rows.push([`Tracked ${chart.entity_type}s`, String(chart.tracked)]);
+    note = chart.entity_type === "account" ? "A running count, read once a day."
+      : `The sum of every tracked ${chart.entity_type}'s latest reading, so a new ${chart.entity_type} shows up as a step.`;
+  } else {
+    // A daily number: typical day, current pace, this week against last, best weekday, and ratios.
+    const days = collected.length;
+    rows.push(["Days with data", `${days} of ${values.length}`]);
+    if (days) rows.push(["Daily average", fmt(sum(collected) / days, chart.metric)]);
+    if (days >= 7) rows.push(["Last 7 days, per day", fmt(sum(collected.slice(-7)) / 7, chart.metric)]);
+    if (days >= 14) {
+      const thisWeek = sum(collected.slice(-7)), lastWeek = sum(collected.slice(-14, -7));
+      if (lastWeek > 0) {
+        const pct = Math.round(((thisWeek - lastWeek) / lastWeek) * 100);
+        rows.push(["This week vs last", el("span", { class: `delta ${pct >= 0 ? "up" : "down"}` }, `${pct >= 0 ? "↑" : "↓"} ${Math.abs(pct)}%`)]);
+      }
+      const totals = Array(7).fill(0), counts = Array(7).fill(0);
+      dates.slice(offFrom).forEach((d, i) => {
+        const wd = (new Date(`${d}T00:00:00Z`).getUTCDay() + 6) % 7;
+        totals[wd] += collected[i];
+        counts[wd] += 1;
+      });
+      const avgs = totals.map((t, i) => (counts[i] ? t / counts[i] : 0)), best = avgs.indexOf(Math.max(...avgs));
+      rows.push(["Best weekday", `${WEEKDAYS[best]} · ${fmt(avgs[best], chart.metric)}`]);
+    } else {
+      note = "Week-over-week and weekday patterns appear after 14 days of data.";
+    }
+    for (const r of RATIOS) {
+      const a = CHARTS.get(r.num), b = CHARTS.get(r.den);
+      if (chart.source !== a?.source || !b) continue;
+      const den = spanSum(valuesOf(b.series));
+      if (den) rows.push([r.label, `${fmt((spanSum(valuesOf(a.series)) / den) * r.scale)}${r.unit}`]);
+    }
+  }
+  const dl = el("dl", { class: "facts-strip" });
+  for (const [label, value] of rows) {
+    const row = el("div"), dd = el("dd");
+    dd.append(value);
+    row.append(el("dt", {}, label), dd);
+    dl.append(row);
+  }
+  box.append(dl);
+  if (note) box.append(el("p", { class: "facts-note" }, note));
+  // On the overview, a way into the platform this series comes from.
+  if (state.tab === "overview" && PLATFORM_NAMES.has(chart.source)) {
+    const link = el("a", { class: "open-link", href: `#${chart.source}` });
+    link.append(sourceDot(chart.source), `Every ${sourceName(chart.source)} number →`);
+    box.append(link);
+  }
+}
+
+/* ---------- compare: the secondary chart ---------- */
+
+// What the compare chart can show on the open tab, each as a ranked list of [name, value] for the filtered days:
+// audience breakdowns (apps, countries, ...), top episodes for each daily metric, and top posts or videos.
+function compareOptions() {
+  const mine = (source) => state.tab === "overview" || source === state.tab;
+  const options = [];
+  for (const b of DATA.breakdowns.filter((x) => mine(x.source))) {
+    options.push({
+      id: `b:${b.source}.${b.metric}.${b.kind}`, title: `${b.label} by ${b.kind}`, source: b.source, metric: b.metric, filtered: true,
+      rows: () => Object.entries(b.daily || {}).map(([name, daily]) => ({ name, value: spanSum(daily) })),
+      other: () => spanSum(b.other_daily || []),
+    });
+  }
+  const dayColumns = DATA.episodes.columns.filter((c) => c.kind === "day" && mine(c.source) && (state.tab !== "overview" || c.headline));
+  for (const c of dayColumns) {
+    const daily = DATA.episode_daily[c.key] || {};
+    if (!Object.keys(daily).length) continue;
+    options.push({
+      id: `e:${c.key}`, title: `Top episodes · ${c.label}`, source: c.source, metric: c.metric, filtered: true, episodes: true,
+      rows: () => Object.entries(daily).map(([slug, values]) => ({ name: splitTitle(EPISODE_TITLES.get(slug) || slug).guest, slug, value: spanSum(values) })),
+    });
+  }
+  for (const t of DATA.items.filter((x) => mine(x.source) && x.rows.length)) {
+    const columns = state.tab === "overview" ? t.columns.slice(0, 1) : t.columns;
+    for (const c of columns) {
+      options.push({
+        id: `i:${t.source}.${t.entity_type}.${c.key}`, title: `Top ${t.entity_type}s · ${c.label}`, source: t.source, metric: c.key, filtered: false,
+        rows: () => t.rows.filter((r) => has(r.values[c.key]))
+          .map((r) => ({ name: r.label || r.id, value: r.values[c.key], url: safeHref(r.url) })),
+      });
+    }
+  }
+  // Comparisons of headline metrics come first, so the chart opens on one that matters.
+  const headline = (o) => DATA.numbers.some((n) => n.source === o.source && n.metric === o.metric && n.headline);
+  return options.sort((a, b) => headline(b) - headline(a));
+}
+
+function renderCompare() {
+  const select = document.getElementById("compare-pick"), canvas = document.getElementById("compare");
+  const note = document.getElementById("compare-note"), options = compareOptions();
+  select.replaceChildren(...options.map((o) => el("option", { value: o.id }, `${o.title}${state.tab === "overview" ? ` · ${sourceName(o.source)}` : ""}`)));
+  showParts(["compare-pick-wrap", "compare-box"], options.length > 0);
+  if (!options.length) {
+    Chart.getChart(canvas)?.destroy();
+    note.className = "compare-note";
+    note.textContent = "Nothing to compare yet: breakdowns, episodes, and posts appear here once collected.";
+    return;
+  }
+  const pick = options.find((o) => o.id === state.compare[state.tab]) || options[0];
+  select.value = pick.id;
+  const all = pick.rows().filter((r) => r.value > 0).sort((a, b) => b.value - a.value);
+  const top = all.slice(0, TOP_ROWS), rest = sum(all.slice(TOP_ROWS).map((r) => r.value)) + (pick.other ? pick.other() : 0);
+  const total = sum(top.map((r) => r.value)) + rest, colour = sourceColor(pick.source);
+  document.getElementById("compare-box").style.height = `${Math.max(140, top.length * 22 + 30)}px`;
+  canvas.setAttribute("aria-label", `${pick.title}: ${top.map((r) => `${r.name} ${fmt(r.value, pick.metric)}`).join(", ")}`);
+  upsertChart(canvas, {
+    type: "bar",
+    data: { labels: top.map((r) => r.name), datasets: [{ data: top.map((r) => r.value), backgroundColor: alpha(colour, 0.8),
+            hoverBackgroundColor: colour, borderRadius: 2, barPercentage: 0.75 }] },
+    options: {
+      indexAxis: "y",
+      onClick: (ev, items) => { if (items.length) openCompareRow(pick, top[items[0].index]); },
+      onHover: (ev, items) => { ev.native.target.style.cursor = items.length && (pick.episodes || top[items[0].index]?.url) ? "pointer" : "default"; },
+      scales: {
+        x: { beginAtZero: true, border: { display: false }, grid: { color: COLORS.rule }, ticks: { maxTicksLimit: 4, callback: (v) => fmt(v, pick.metric) } },
+        y: { grid: { display: false }, ticks: { color: COLORS.muted, callback(v) { const s = this.getLabelForValue(v); return s.length > 20 ? `${s.slice(0, 19)}…` : s; } } },
+      },
+      plugins: { tooltip: { callbacks: {
+        title: (items) => top[items[0].dataIndex].name,
+        label: (ctx) => `${fmt(ctx.raw, pick.metric)}${total ? ` · ${Math.round((ctx.raw / total) * 100)}%` : ""}`,
+        footer: () => (pick.episodes ? "click to find it in the episode table" : top[0]?.url ? "click to open it" : ""),
+      } } },
+    },
+  });
+  note.className = `compare-note${pick.filtered && state.selection ? " stretch" : ""}`;
+  const others = rest > 0 ? `everything else · ${fmt(rest, pick.metric)} · ` : "";
+  note.textContent = `${others}${pick.filtered ? spanLabel() : "latest readings · not affected by the range"}`;
+}
+
+// A bar in the compare chart: an episode is found in the episode table; a post or video opens on its platform.
+function openCompareRow(pick, row) {
+  if (pick.episodes && activeTable) {
+    activeTable.search(row.name);
+    activeTable.mount.scrollIntoView({ block: "start" });
+  } else if (row.url) {
+    window.open(row.url, "_blank", "noopener,noreferrer");
+  }
+}
+
+function wireCompare() {
+  document.getElementById("compare-pick").addEventListener("change", (ev) => {
+    state.compare[state.tab] = ev.target.value;
+    renderCompare();
   });
 }
 
@@ -986,10 +1294,13 @@ function searchIcon() {
   return svg;
 }
 
-// A searchable, sortable table with in-cell bars and optional expandable rows.
-// columns: [{key, label, sub, source, numeric, metric, title, get(row), render(row, ctl) -> Node|string}]
-function dataTable(mount, { noun, columns, rows, searchText, defaultSort, limit, detail, filterLabel, hasData }) {
-  let sortKey = defaultSort, ascending = false, expanded = false, query = "", onlyData = false;
+// A searchable, sortable, paged table with in-cell bars and optional expandable rows. `columns` may be a
+// function, re-read on every redraw, so filter-driven columns (range totals) follow the filters.
+// columns: [{key, label, sub, subClass, source, numeric, metric, title, get(row), render(row, ctl) -> Node|string}]
+// Returns {mount, redraw(), search(text)}.
+function dataTable(mount, { noun, columns, rows, searchText, defaultSort, detail, filterLabel, hasData, onlyDataFirst = false }) {
+  const columnsNow = typeof columns === "function" ? columns : () => columns;
+  let sortKey = defaultSort, ascending = false, query = "", onlyData = onlyDataFirst, page = 0;
   const open = new Set();
 
   const tools = el("div", { class: "tools" });
@@ -999,7 +1310,7 @@ function dataTable(mount, { noun, columns, rows, searchText, defaultSort, limit,
   tools.append(search);
   let toggle = null;
   if (filterLabel) {
-    toggle = el("input", { type: "checkbox" });
+    toggle = el("input", { type: "checkbox", checked: onlyData ? "" : null });
     const lab = el("label", { class: "toggle" });
     lab.append(toggle, el("span", {}, filterLabel));
     tools.append(lab);
@@ -1009,37 +1320,46 @@ function dataTable(mount, { noun, columns, rows, searchText, defaultSort, limit,
   const wrap = el("div", { class: "table-wrap panel" });
   const table = el("table");
   wrap.append(table);
-  const more = el("button", { class: "more", type: "button", hidden: "" });
-  mount.append(tools, wrap, more);
+  const pager = el("div", { class: "pager" });
+  const prev = el("button", { type: "button" }, "‹ previous"), next = el("button", { type: "button" }, "next ›"), where = el("span");
+  pager.append(prev, next, where);
+  mount.append(tools, wrap, pager);
 
   function draw() {
-    // Filter, sort, then cap the visible rows (a search always shows every match).
+    const cols = columnsNow();
+    // Filter, sort, then show one page (a search searches every row).
     const q = query.trim().toLowerCase();
     const filtered = rows.filter((r) => (!q || searchText(r).toLowerCase().includes(q)) && (!onlyData || hasData(r)));
-    const col = columns.find((c) => c.key === sortKey) || columns[0];
+    const col = cols.find((c) => c.key === sortKey) || cols[0];
     const sorted = [...filtered].sort((a, b) => {
       const va = col.get(a), vb = col.get(b);
       // Missing values always sink to the bottom, whichever direction.
-      if (va === null || va === undefined || va === "") return 1;
-      if (vb === null || vb === undefined || vb === "") return -1;
+      if (!has(va) || va === "") return 1;
+      if (!has(vb) || vb === "") return -1;
       const cmp = typeof va === "number" ? va - vb : String(va).localeCompare(String(vb));
       return ascending ? cmp : -cmp;
     });
-    const visible = limit && !expanded && !q ? sorted.slice(0, limit) : sorted;
+    const pages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+    page = Math.min(page, pages - 1);
+    const visible = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
     count.textContent = filtered.length === rows.length ? `${rows.length} ${noun}s` : `${filtered.length} of ${rows.length} ${noun}s`;
+    pager.hidden = sorted.length <= PAGE_SIZE;
+    prev.disabled = page === 0;
+    next.disabled = page >= pages - 1;
+    where.textContent = `Showing ${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + visible.length} of ${sorted.length}`;
 
     // Column maxima scale the in-cell bars.
-    const maxima = Object.fromEntries(columns.filter((c) => c.numeric).map((c) => [c.key, Math.max(0, ...filtered.map((r) => c.get(r) || 0))]));
+    const maxima = Object.fromEntries(cols.filter((c) => c.numeric).map((c) => [c.key, Math.max(0, ...filtered.map((r) => c.get(r) || 0))]));
 
     table.replaceChildren();
     const head = el("tr");
-    for (const c of columns) {
+    for (const c of cols) {
       const th = el("th", { class: c.numeric ? "n" : "", scope: "col" });
       if (c.key === sortKey) th.setAttribute("aria-sort", ascending ? "ascending" : "descending");
       const btn = el("button", { type: "button", title: c.title || "" });
       btn.append(el("span", { class: "label" }, c.label));
       if (c.sub) {
-        const sub = el("span", { class: "th-sub" });
+        const sub = el("span", { class: `th-sub${c.subClass ? ` ${c.subClass}` : ""}` });
         if (c.source) sub.append(sourceDot(c.source));
         sub.append(el("span", {}, c.sub));
         btn.append(sub);
@@ -1047,6 +1367,7 @@ function dataTable(mount, { noun, columns, rows, searchText, defaultSort, limit,
       btn.addEventListener("click", () => {
         ascending = c.key === sortKey ? !ascending : !c.numeric;
         sortKey = c.key;
+        page = 0;
         draw();
       });
       th.append(btn);
@@ -1057,11 +1378,11 @@ function dataTable(mount, { noun, columns, rows, searchText, defaultSort, limit,
     const body = el("tbody");
     for (const row of visible) {
       const tr = el("tr");
-      for (const c of columns) {
+      for (const c of cols) {
         const value = c.get(row);
         const td = el("td", { class: c.numeric ? "n" : "" });
         if (c.numeric) {
-          if (value === null || value === undefined) {
+          if (!has(value)) {
             td.classList.add("empty-val");
             td.textContent = "–";
           } else {
@@ -1078,7 +1399,7 @@ function dataTable(mount, { noun, columns, rows, searchText, defaultSort, limit,
       body.append(tr);
       if (detail && open.has(row)) {
         const dtr = el("tr", { class: "detail" });
-        const dtd = el("td", { colspan: columns.length });
+        const dtd = el("td", { colspan: cols.length });
         dtd.append(detail(row));
         dtr.append(dtd);
         body.append(dtr);
@@ -1086,30 +1407,46 @@ function dataTable(mount, { noun, columns, rows, searchText, defaultSort, limit,
     }
     if (!visible.length) {
       const tr = el("tr");
-      tr.append(el("td", { colspan: columns.length, class: "empty" }, q ? `No ${noun}s match “${query.trim()}”.` : `No ${noun}s to show.`));
+      tr.append(el("td", { colspan: cols.length, class: "empty" }, q ? `No ${noun}s match “${query.trim()}”.` : `No ${noun}s to show.`));
       body.append(tr);
     }
     table.append(thead, body);
-    more.hidden = !limit || q || filtered.length <= limit;
-    more.textContent = expanded ? "show fewer" : `show all ${filtered.length}`;
   }
 
-  input.addEventListener("input", () => { query = input.value; draw(); });
-  if (toggle) toggle.addEventListener("change", () => { onlyData = toggle.checked; draw(); });
-  more.addEventListener("click", () => { expanded = !expanded; draw(); });
+  input.addEventListener("input", () => { query = input.value; page = 0; draw(); });
+  if (toggle) toggle.addEventListener("change", () => { onlyData = toggle.checked; page = 0; draw(); });
+  prev.addEventListener("click", () => { page -= 1; draw(); });
+  next.addEventListener("click", () => { page += 1; draw(); });
   draw();
+  return {
+    mount,
+    redraw: draw,
+    search(text) {
+      input.value = query = text;
+      if (toggle) toggle.checked = onlyData = false;
+      page = 0;
+      draw();
+    },
+  };
 }
 
-function renderEpisodes() {
-  const mount = document.getElementById("episodes");
-  const { columns, rows } = DATA.episodes;
+// The episode table on the open tab; the filters redraw it and the compare chart searches it.
+let activeTable = null;
+
+// The episode table for some columns (the overview's headline ones, or one platform's). Each daily column gets a
+// companion that totals the filtered days, first, so the table follows the range and the stretch.
+// An expanded row lists every number the episode has, from every platform. Returns a summary line.
+function renderEpisodes(mount, columns, note, { onlyWithData = false } = {}) {
+  const rows = DATA.episodes.rows;
   // Columns with no value for any episode add nothing but width.
-  const shown = columns.filter((c) => rows.some((r) => r.values[c.key] !== null && r.values[c.key] !== undefined));
+  const shown = columns.filter((c) => rows.some((r) => has(r.values[c.key])));
+  // Range columns, the one covering the most episodes first (it's also the default sort).
+  const coverage = (c) => Object.keys(DATA.episode_daily[c.key]).length;
+  const ranged = shown.filter((c) => c.kind === "day" && DATA.episode_daily[c.key]).sort((a, b) => coverage(b) - coverage(a));
   const hasData = (r) => shown.some((c) => r.values[c.key]);
-  document.getElementById("episodes-note").textContent = `${rows.filter(hasData).length} of ${rows.length} have numbers · all collected data`;
   const linkedItems = (slug) => DATA.items.flatMap((t) => t.rows.filter((r) => r.episode_slug === slug).map((r) => ({ ...r, source: t.source, type: t.entity_type })));
 
-  const cols = [
+  const fixed = [
     { key: "title", label: "Episode", get: (r) => splitTitle(r.title).guest, render: (r, ctl) => {
         const { guest, topic } = splitTitle(r.title);
         const box = el("div", { class: "ep" });
@@ -1122,27 +1459,32 @@ function renderEpisodes() {
         return box;
       } },
     { key: "published_on", label: "Released", get: (r) => r.published_on, render: (r) => el("span", { class: "faint nowrap" }, r.published_on || "–") },
-    ...shown.map((c) => {
-      const launch = c.key.endsWith(".launch");
-      return {
-        key: c.key, numeric: true, source: c.source, title: c.basis, metric: c.key.split(".")[1],
-        label: launch ? c.label.replace(/, first \d+d$/, "") : c.label, sub: launch ? `${c.source} · first 7d` : c.source,
-        get: (r) => r.values[c.key],
-      };
-    }),
   ];
+  const stored = shown.map((c) => {
+    const launch = c.kind === "launch";
+    return {
+      key: c.key, numeric: true, source: c.source, title: c.basis, metric: c.metric,
+      label: launch ? c.label.replace(/, first \d+d$/, "") : c.label, sub: launch ? `${c.source} · first 7d` : `${c.source} · all time`,
+      get: (r) => r.values[c.key],
+    };
+  });
+  const columnsNow = () => [...fixed, ...ranged.map((c) => ({
+    key: `${c.key}.span`, numeric: true, source: c.source, metric: c.metric, label: c.label, title: "total over the filtered days",
+    sub: spanLabel(), subClass: state.selection ? "stretch" : "",
+    get: (r) => { const daily = DATA.episode_daily[c.key][r.slug]; return daily ? spanSum(daily) : null; },
+  })), ...stored];
 
   // Expanded row: only the numbers that exist (basis on hover), then linked posts and videos, thumbnail changes, slug.
   const detail = (r) => {
     const box = el("div", { class: "detail" });
     const facts = el("dl", { class: "facts" });
-    for (const c of columns) {
+    for (const c of DATA.episodes.columns) {
       const value = r.values[c.key];
-      if (value === null || value === undefined) continue;
-      const fact = el("div", { class: "fact", title: `${c.source} · ${c.basis}` });
+      if (!has(value)) continue;
+      const fact = el("div", { class: "fact", title: `${sourceName(c.source)} · ${c.basis}` });
       const dt = el("dt");
       dt.append(sourceDot(c.source), el("span", {}, c.label));
-      fact.append(dt, el("dd", {}, fmt(value, c.key.split(".")[1])));
+      fact.append(dt, el("dd", {}, fmt(value, c.metric)));
       facts.append(fact);
     }
     if (facts.children.length) box.append(facts);
@@ -1150,7 +1492,9 @@ function renderEpisodes() {
     for (const it of linkedItems(r.slug)) {
       const li = el("li");
       const href = safeHref(it.url);
-      li.append(`${it.source} ${it.type} · `, href ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, it.label || it.id) : (it.label || it.id));
+      // The platform name opens its tab; the item's text opens the post or video itself.
+      li.append(el("a", { href: `#${it.source}` }, `${sourceName(it.source)} ${it.type}`), " · ",
+        href ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, it.label || it.id) : (it.label || it.id));
       links.append(li);
     }
     const changes = DATA.events.filter((e) => e.kind === "thumbnail" && e.slug === r.slug);
@@ -1160,270 +1504,184 @@ function renderEpisodes() {
     return box;
   };
 
-  dataTable(mount, {
-    noun: "episode", columns: cols, rows, limit: EPISODE_ROWS_COLLAPSED, detail, hasData,
+  activeTable = dataTable(mount, {
+    noun: "episode", columns: columnsNow, rows, detail, hasData, onlyDataFirst: onlyWithData,
     filterLabel: "only with numbers", searchText: (r) => `${r.title} ${r.slug}`,
-    defaultSort: shown.length ? shown[0].key : "published_on",
+    defaultSort: ranged.length ? `${ranged[0].key}.span` : shown.length ? shown[0].key : "published_on",
   });
+  // The section note says how many episodes have numbers and, when range columns exist, what they cover.
+  const summary = `${rows.filter(hasData).length} of ${rows.length} have numbers`;
+  activeTable.updateNote = () => {
+    note.textContent = ranged.length ? `${summary} · range columns: ${spanLabel()}` : summary;
+    note.classList.toggle("stretch", Boolean(ranged.length && state.selection));
+  };
+  activeTable.updateNote();
 }
 
-// One table per source and item type (X posts, YouTube videos, ...).
-function renderItems() {
-  const body = document.getElementById("items-body");
-  const tables = DATA.items.filter((t) => t.rows.length);
-  if (!tables.length) { document.getElementById("items").hidden = true; return; }
-  for (const t of tables) {
-    const noun = t.entity_type;
-    const head = el("div", { class: "subhead" });
-    head.append(sourceDot(t.source), el("span", { class: "label" }, `${t.source} ${noun}s`));
-    const mount = el("div");
-    body.append(head, mount);
-    const cols = [
-      { key: "created_at", label: "Published", get: (r) => r.created_at, render: (r) => el("span", { class: "faint nowrap" }, (r.created_at || "").slice(0, 10) || "–") },
-      { key: "label", label: noun, get: (r) => r.label, render: (r) => {
-          const href = safeHref(r.url);
-          const attrs = { class: "item-label", title: r.label || "" };
-          return href ? el("a", { ...attrs, href, target: "_blank", rel: "noopener noreferrer" }, r.label || "(no text)") : el("span", attrs, r.label || "");
-        } },
-      { key: "episode_slug", label: "Episode", get: (r) => r.episode_slug, render: (r) => r.episode_slug ? splitTitle(EPISODE_TITLES.get(r.episode_slug) || r.episode_slug).guest : "–" },
-      ...t.columns.map((c) => ({ key: c.key, label: c.label, numeric: true, source: t.source, metric: c.key, get: (r) => r.values[c.key] })),
-    ];
-    // Derived: likes plus comments per 1,000 views, when the item reports all three.
-    const viewsKey = t.columns.map((c) => c.key).find((k) => k.includes("views"));
-    const keys = new Set(t.columns.map((c) => c.key));
-    if (viewsKey && keys.has("likes") && keys.has("comments")) {
-      cols.push({
-        key: "engagement", label: "Engagement", sub: "per 1k views", numeric: true, source: t.source,
-        title: "(likes + comments) per 1,000 views",
-        get: (r) => (r.values[viewsKey] ? (((r.values.likes || 0) + (r.values.comments || 0)) / r.values[viewsKey]) * 1000 : null),
-      });
-    }
-    dataTable(mount, { noun, columns: cols, rows: t.rows, defaultSort: "created_at", limit: 10, searchText: (r) => `${r.label || ""} ${r.episode_slug || ""}` });
+// One platform's tracked posts or videos, with every number collected for each (latest readings).
+function renderItemTable(mount, t) {
+  const noun = t.entity_type;
+  const cols = [
+    { key: "created_at", label: "Published", get: (r) => r.created_at, render: (r) => el("span", { class: "faint nowrap" }, (r.created_at || "").slice(0, 10) || "–") },
+    { key: "label", label: noun, get: (r) => r.label, render: (r) => {
+        const href = safeHref(r.url);
+        const attrs = { class: "item-label", title: r.label || "" };
+        return href ? el("a", { ...attrs, href, target: "_blank", rel: "noopener noreferrer" }, r.label || "(no text)") : el("span", attrs, r.label || "");
+      } },
+    { key: "episode_slug", label: "Episode", get: (r) => r.episode_slug, render: (r) => r.episode_slug ? splitTitle(EPISODE_TITLES.get(r.episode_slug) || r.episode_slug).guest : "–" },
+    ...t.columns.map((c) => ({ key: c.key, label: c.label, numeric: true, source: t.source, metric: c.key, get: (r) => r.values[c.key] })),
+  ];
+  // Derived: likes plus comments per 1,000 views, when the item reports all three.
+  const viewsKey = t.columns.map((c) => c.key).find((k) => k.includes("views"));
+  const keys = new Set(t.columns.map((c) => c.key));
+  if (viewsKey && keys.has("likes") && keys.has("comments")) {
+    cols.push({
+      key: "engagement", label: "Engagement", sub: "per 1k views", numeric: true, source: t.source,
+      title: "(likes + comments) per 1,000 views",
+      get: (r) => (r.values[viewsKey] ? (((r.values.likes || 0) + (r.values.comments || 0)) / r.values[viewsKey]) * 1000 : null),
+    });
   }
+  dataTable(mount, { noun, columns: cols, rows: t.rows, defaultSort: "created_at", searchText: (r) => `${r.label || ""} ${r.episode_slug || ""}` });
 }
 
-/* ---------- back catalog: how the whole archive performs, as plots ---------- */
+/* ---------- back catalog: how the whole archive performs ---------- */
 
-// Episode metrics worth plotting: not launch-window columns, and filled for at least five episodes.
+// Episode metrics worth plotting: not launch-window columns, filled for at least five episodes, headline first.
 const CATALOG_COLUMNS = DATA.episodes.columns
-  .filter((c) => !c.key.endsWith(".launch"))
-  .map((c) => ({ ...c, metric: c.key.split(".")[1], filled: DATA.episodes.rows.filter((r) => r.values[c.key] !== null && r.values[c.key] !== undefined).length }))
+  .filter((c) => c.kind !== "launch")
+  .map((c) => ({ ...c, filled: DATA.episodes.rows.filter((r) => has(r.values[c.key])).length }))
   .filter((c) => c.filled >= 5)
-  .sort((a, b) => b.filled - a.filled);
-
-// A container's width minus its horizontal padding: the room a plot actually has.
-function innerWidth(node) {
-  const style = getComputedStyle(node);
-  return node.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-}
-
-function svgFrame(width, height) {
-  return el("svg:svg", { viewBox: `0 0 ${width} ${height}`, width, height, role: "img" });
-}
-
-// Release date (x) against the metric (log y): evergreen episodes stand out, newest sit on the right.
-function scatterPlot(mount, points, col) {
-  const W = Math.max(280, innerWidth(mount)), H = 210, m = { l: 44, r: 16, t: 12, b: 24 };
-  const svg = svgFrame(W, H);
-  svg.setAttribute("aria-label", `${col.label} by release date for ${points.length} episodes`);
-  const times = points.map((p) => p.time), t0 = Math.min(...times), t1 = Math.max(...times);
-  const vmax = Math.max(1, ...points.map((p) => p.v));
-  const ly = (v) => Math.log10(v + 1), x = (t) => m.l + ((t - t0) / (t1 - t0 || 1)) * (W - m.l - m.r);
-  const y = (v) => H - m.b - (ly(v) / ly(vmax)) * (H - m.t - m.b);
-  // Powers of ten on the log axis, and each new year along the bottom.
-  for (let p = 0; 10 ** p <= vmax * 1.001; p++) {
-    const v = 10 ** p;
-    svg.append(el("svg:line", { class: "gridline", x1: m.l, x2: W - m.r, y1: y(v), y2: y(v) }),
-      el("svg:text", { x: m.l - 8, y: y(v) + 3, "text-anchor": "end" }, fmt(v)));
-  }
-  for (let year = new Date(t0).getUTCFullYear() + 1; Date.UTC(year, 0, 1) <= t1; year++) {
-    svg.append(el("svg:text", { x: x(Date.UTC(year, 0, 1)), y: H - 6, "text-anchor": "middle" }, String(year)));
-  }
-  const top = [...points].sort((a, b) => b.v - a.v).slice(0, 3);
-  for (const p of points) {
-    const dot = el("svg:circle", { class: "dotp", cx: x(p.time), cy: y(p.v), r: top.includes(p) ? 5 : 3.5 });
-    dot.addEventListener("mousemove", (ev) => showTip(ev, splitTitle(p.row.title).guest, [`${fmt(p.v, col.metric)} ${col.label.toLowerCase()}`, `released ${p.row.published_on}`]));
-    dot.addEventListener("mouseleave", hideTip);
-    svg.append(dot);
-  }
-  // Name the three biggest so the plot reads without hovering; a label that would collide moves down a line.
-  const placed = [];
-  for (const p of top) {
-    const anchor = x(p.time) > W * 0.8 ? "end" : "start";
-    let ly0 = y(p.v) + 3;
-    while (placed.some(([px, py]) => Math.abs(px - x(p.time)) < 170 && Math.abs(py - ly0) < 13)) ly0 += 13;
-    placed.push([x(p.time), ly0]);
-    svg.append(el("svg:text", { class: "lead", x: x(p.time) + (anchor === "end" ? -9 : 9), y: ly0, "text-anchor": anchor }, splitTitle(p.row.title).guest));
-  }
-  mount.append(svg);
-}
-
-// Total per release year as bars, with the per-episode average on hover.
-function yearBars(mount, points, col) {
-  const years = new Map();
-  for (const p of points) {
-    const yr = p.row.published_on.slice(0, 4), g = years.get(yr) || { total: 0, count: 0 };
-    g.total += p.v;
-    g.count += 1;
-    years.set(yr, g);
-  }
-  const rows = [...years.entries()].sort(([a], [b]) => a.localeCompare(b));
-  const W = Math.max(240, innerWidth(mount)), H = 160, m = { l: 4, r: 4, t: 18, b: 22 };
-  const svg = svgFrame(W, H);
-  svg.setAttribute("aria-label", rows.map(([yr, g]) => `${yr}: ${fmt(g.total, col.metric)}`).join(", "));
-  const max = Math.max(1e-9, ...rows.map(([, g]) => g.total)), slot = (W - m.l - m.r) / rows.length;
-  rows.forEach(([yr, g], i) => {
-    const h = (g.total / max) * (H - m.t - m.b), bx = m.l + i * slot + slot * 0.18, bw = slot * 0.64;
-    const bar = el("svg:rect", { class: "ybar", x: bx, y: H - m.b - h, width: bw, height: Math.max(1, h), rx: 2 });
-    bar.addEventListener("mousemove", (ev) => showTip(ev, yr, [`${g.count} episode${g.count > 1 ? "s" : ""}`, `${fmt(g.total, col.metric)} ${col.label.toLowerCase()}`, `${fmt(g.total / g.count, col.metric)} per episode`]));
-    bar.addEventListener("mouseleave", hideTip);
-    svg.append(bar, el("svg:text", { x: bx + bw / 2, y: H - m.b - h - 5, "text-anchor": "middle" }, fmt(g.total, col.metric)),
-      el("svg:text", { x: bx + bw / 2, y: H - 6, "text-anchor": "middle" }, slot < 34 ? `'${yr.slice(2)}` : yr));
-  });
-  mount.append(svg);
-}
-
-// Cumulative share held by the top episodes: a steep curve means a few hits carry the archive.
-function concentrationCurve(mount, points, col) {
-  const sorted = points.map((p) => p.v).sort((a, b) => b - a), total = sum(sorted), n = sorted.length;
-  if (!total) return;
-  let run = 0;
-  const shares = sorted.map((v) => (run += v) / total);
-  const W = Math.max(240, innerWidth(mount)), H = 160, m = { l: 36, r: 12, t: 12, b: 22 };
-  const svg = svgFrame(W, H);
-  const x = (f) => m.l + f * (W - m.l - m.r), y = (f) => H - m.b - f * (H - m.t - m.b);
-  for (const f of [0, 0.5, 1]) {
-    svg.append(el("svg:line", { class: "gridline", x1: m.l, x2: W - m.r, y1: y(f), y2: y(f) }),
-      el("svg:text", { x: m.l - 6, y: y(f) + 3, "text-anchor": "end" }, `${f * 100}%`),
-      el("svg:text", { x: x(f), y: H - 6, "text-anchor": f === 0 ? "start" : f === 1 ? "end" : "middle" }, f === 0.5 ? "50% of episodes" : `${f * 100}%`));
-  }
-  const pts = shares.map((s, i) => `${x((i + 1) / n).toFixed(1)},${y(s).toFixed(1)}`);
-  svg.append(el("svg:line", { class: "diag", x1: x(0), y1: y(0), x2: x(1), y2: y(1) }),
-    el("svg:path", { class: "curve-area", d: `M${x(0)},${y(0)}L${pts.join("L")}L${x(1)},${y(0)}Z` }),
-    el("svg:path", { class: "curve", d: `M${x(0)},${y(0)}L${pts.join("L")}` }));
-  const k = Math.min(10, n), kx = x(k / n), ky = y(shares[k - 1]);
-  svg.append(el("svg:circle", { cx: kx, cy: ky, r: 4, fill: "#e3ebe7" }),
-    el("svg:text", { class: "lead", x: kx + 8, y: ky + 14 }, `top ${k} → ${Math.round(shares[k - 1] * 100)}%`));
-  svg.setAttribute("aria-label", `Top ${k} of ${n} episodes hold ${Math.round(shares[k - 1] * 100)}% of ${col.label}`);
-  // Hover anywhere along the curve to read the share at that rank.
-  svg.addEventListener("mousemove", (ev) => {
-    const r = svg.getBoundingClientRect(), f = (((ev.clientX - r.left) / r.width) * W - m.l) / (W - m.l - m.r);
-    if (f < 0 || f > 1) { hideTip(); return; }
-    const i = Math.min(n - 1, Math.max(0, Math.ceil(f * n) - 1));
-    showTip(ev, `Top ${i + 1} episodes`, [`${Math.round(((i + 1) / n) * 100)}% of the catalog`, `${Math.round(shares[i] * 100)}% of ${col.label.toLowerCase()}`]);
-  });
-  svg.addEventListener("mouseleave", hideTip);
-  mount.append(svg);
-}
+  .sort((a, b) => (b.headline - a.headline) || (b.filled - a.filled));
 
 function renderCatalog() {
   const section = document.getElementById("catalog");
   if (!CATALOG_COLUMNS.length) { section.hidden = true; return; }
   const select = document.getElementById("catalog-metric"), body = document.getElementById("catalog-body");
-  for (const c of CATALOG_COLUMNS) select.append(el("option", { value: c.key }, `${c.label} · ${c.source}`));
+  for (const c of CATALOG_COLUMNS) select.append(el("option", { value: c.key }, `${c.label} · ${sourceName(c.source)}`));
+  const kpis = el("div", { class: "kpis" }), plots = el("div", { class: "plots" });
+  const plot = (cls, title) => {
+    const box = el("div", { class: `plot ${cls}` }), head = el("div", { class: "plot-title" }), note = el("span", { class: "faint" });
+    head.append(el("span", { class: "label" }, title), note);
+    const holder = el("div", { class: "chart-box" }), canvas = el("canvas", { role: "img" });
+    holder.append(canvas);
+    box.append(head, holder);
+    plots.append(box);
+    return { canvas, note };
+  };
+  const scatter = plot("wide", "Every episode by release date");
+  const years = plot("half", "By release year");
+  const curve = plot("half", "Share held by the top episodes");
+  body.append(kpis, plots);
 
   function draw() {
-    const col = CATALOG_COLUMNS.find((c) => c.key === select.value) || CATALOG_COLUMNS[0];
-    body.replaceChildren();
-    tint(body, col.source);
+    const col = CATALOG_COLUMNS.find((c) => c.key === select.value) || CATALOG_COLUMNS[0], colour = sourceColor(col.source);
     const points = DATA.episodes.rows
-      .filter((r) => r.published_on && r.values[col.key] !== null && r.values[col.key] !== undefined)
+      .filter((r) => r.published_on && has(r.values[col.key]))
       .map((r) => ({ row: r, v: r.values[col.key], time: Date.parse(`${r.published_on}T00:00:00Z`) }));
-    if (points.length < 2) { body.append(el("p", { class: "empty kpis" }, "Not enough episodes with this number yet.")); return; }
+    const name = col.label.toLowerCase();
 
     // Numbers about the archive as a whole.
-    const values = points.map((p) => p.v), total = sum(values);
-    const sorted = [...values].sort((a, b) => b - a), k = Math.min(10, sorted.length);
+    const values = points.map((p) => p.v), total = sum(values), sorted = [...values].sort((a, b) => b - a), k = Math.min(10, sorted.length);
     const yearAgo = new Date(Date.parse(`${DATA.today}T00:00:00Z`) - 365 * 864e5).toISOString().slice(0, 10);
     const older = sum(points.filter((p) => p.row.published_on < yearAgo).map((p) => p.v));
-    const kpis = el("div", { class: "kpis" });
+    kpis.replaceChildren();
     for (const [label, value] of [
-      [`Total ${col.label.toLowerCase()}`, fmt(total, col.metric)],
-      ["Episodes with data", String(points.length)],
-      ["Median per episode", fmt(median(values), col.metric)],
+      [`Total ${name}`, fmt(total, col.metric)], ["Episodes with data", String(points.length)],
+      ["Median per episode", points.length ? fmt(median(values), col.metric) : "–"],
       [`Top ${k} episodes hold`, total ? `${Math.round((sum(sorted.slice(0, k)) / total) * 100)}%` : "–"],
       ["From episodes over a year old", total ? `${Math.round((older / total) * 100)}%` : "–"],
     ]) {
-      const kpi = el("div", { class: "kpi" });
-      kpi.append(el("span", { class: "k-value" }, value), el("span", { class: "k-label" }, label));
+      const kpi = el("div");
+      kpi.append(el("span", { class: "v" }, value), el("span", { class: "l" }, label));
       kpis.append(kpi);
     }
 
-    const plots = el("div", { class: "plots" });
-    const plot = (cls, title, note) => {
-      const box = el("div", { class: `plot ${cls}` });
-      const head = el("div", { class: "plot-title" });
-      head.append(el("span", { class: "label" }, title), el("span", { class: "faint" }, note));
-      box.append(head);
-      plots.append(box);
-      return box;
-    };
-    const scatter = plot("wide", "Every episode by release date", "log scale · hover a dot");
-    const years = plot("half", "By release year", "total · hover for per episode");
-    const curve = plot("half", "Share held by the top episodes", "dashed line = every episode equal");
-    body.append(kpis, plots);
-    scatterPlot(scatter, points, col);
-    yearBars(years, points, col);
-    concentrationCurve(curve, points, col);
-  }
+    // Release date (x) against the metric (log y): evergreen episodes stand out, newest sit on the right.
+    const positive = points.filter((p) => p.v > 0), top3 = [...positive].sort((a, b) => b.v - a.v).slice(0, 3);
+    const t0 = Math.min(...points.map((p) => p.time)), t1 = Math.max(...points.map((p) => p.time));
+    scatter.note.textContent = `log scale · hover a dot${points.length > positive.length ? ` · ${points.length - positive.length} at zero not shown` : ""}`;
+    scatter.canvas.setAttribute("aria-label", `${col.label} by release date for ${positive.length} episodes`);
+    const sc = upsertChart(scatter.canvas, {
+      type: "scatter",
+      data: { datasets: [{ data: positive.map((p) => ({ x: p.time, y: p.v, p })), backgroundColor: alpha(colour, 0.7),
+              hoverBackgroundColor: colour, pointRadius: (ctx) => (top3.includes(ctx.raw?.p) ? 5 : 3.5), pointHoverRadius: 6 }] },
+      options: {
+        layout: { padding: { right: 12 } },
+        scales: {
+          x: { type: "linear", min: t0, max: t1, grid: { display: false },
+               afterBuildTicks: (axis) => {
+                 const ticks = [];
+                 for (let y = new Date(t0).getUTCFullYear() + 1; Date.UTC(y, 0, 1) <= t1; y++) ticks.push({ value: Date.UTC(y, 0, 1) });
+                 axis.ticks = ticks;
+               },
+               ticks: { callback: (v) => String(new Date(v).getUTCFullYear()) } },
+          y: { type: "logarithmic", border: { display: false }, grid: { color: COLORS.rule },
+               ticks: { callback: (v) => (Number.isInteger(Math.log10(v)) ? fmt(v) : "") } },
+        },
+        plugins: { tooltip: { callbacks: {
+          title: (items) => splitTitle(items[0].raw.p.row.title).guest,
+          label: (ctx) => [`${fmt(ctx.raw.y, col.metric)} ${name}`, `released ${ctx.raw.p.row.published_on}`],
+        } } },
+      },
+    });
+    // Name the three biggest so the plot reads without hovering.
+    sc.$overlay = { labels: top3.map((p) => ({ x: p.time, y: p.v, text: splitTitle(p.row.title).guest, dx: p.time > t0 + (t1 - t0) * 0.8 ? -9 : 9 })) };
+    sc.draw();
 
-  select.addEventListener("change", draw);
-  // Plots are drawn at their real pixel width (crisp dots and text), so redraw when that width changes.
-  let width = 0;
-  new ResizeObserver(() => {
-    if (Math.abs(body.clientWidth - width) < 8) return;
-    width = body.clientWidth;
-    draw();
-  }).observe(body);
-}
-
-/* ---------- audience ---------- */
-
-// One panel: pick a breakdown on the left (downloads by country, by app, ...), read it on the right.
-function renderAudience() {
-  const mount = document.getElementById("audience-body");
-  document.getElementById("audience-note").textContent = `last ${DATA.days} days`;
-  if (!DATA.breakdowns.length) {
-    mount.append(el("p", { class: "empty" }, "No breakdowns yet. They appear once a source reports apps, countries, or devices."));
-    return;
-  }
-  const panel = el("div", { class: "panel audience" });
-  const views = el("div", { class: "views", role: "group", "aria-label": "Breakdown" });
-  const view = el("div", { class: "view", "aria-live": "polite" });
-  panel.append(views, view);
-  mount.append(panel);
-
-  function show(index) {
-    const b = DATA.breakdowns[index];
-    views.querySelectorAll("button").forEach((btn, i) => btn.setAttribute("aria-pressed", String(i === index)));
-    view.replaceChildren();
-    tint(view, b.source);
-    const total = sum(b.rows.map(([, v]) => v)) + (b.other || 0);
-    const head = el("div", { class: "view-head" });
-    const title = el("span", { class: "label" }, `${b.label} by ${b.kind} · ${b.source}`);
-    head.append(title, el("span", { class: "v-total" }, `${fmt(total, b.metric)} total`));
-    const list = el("ul", { class: "bars" });
-    const max = Math.max(1e-9, ...b.rows.map(([, v]) => v));
-    for (const [name, value] of b.rows) {
-      const li = el("li");
-      const line = el("div", { class: "line" });
-      const fill = el("div", { class: "fill" });
-      fill.style.width = `${(value / max) * 100}%`;
-      line.append(fill);
-      li.append(el("span", {}, name), el("span", {}, fmt(value, b.metric)), el("span", { class: "share" }, total ? `${Math.round((value / total) * 100)}%` : ""), line);
-      list.append(li);
+    // Total per release year as bars, with the per-episode average on hover.
+    const byYear = new Map();
+    for (const p of points) {
+      const yr = p.row.published_on.slice(0, 4), g = byYear.get(yr) || { total: 0, count: 0 };
+      g.total += p.v;
+      g.count += 1;
+      byYear.set(yr, g);
     }
-    view.append(head, list);
-    if (b.other > 0) view.append(el("span", { class: "rest" }, `everything else · ${fmt(b.other, b.metric)}`));
-  }
+    const yearRows = [...byYear.entries()].sort(([a], [b]) => a.localeCompare(b));
+    years.note.textContent = "total · hover for per episode";
+    years.canvas.setAttribute("aria-label", yearRows.map(([yr, g]) => `${yr}: ${fmt(g.total, col.metric)}`).join(", "));
+    upsertChart(years.canvas, {
+      type: "bar",
+      data: { labels: yearRows.map(([yr]) => yr), datasets: [{ data: yearRows.map(([, g]) => g.total), backgroundColor: alpha(colour, 0.85),
+              hoverBackgroundColor: colour, borderRadius: 2, barPercentage: 0.7 }] },
+      options: {
+        scales: { x: { grid: { display: false } },
+                  y: { beginAtZero: true, border: { display: false }, grid: { color: COLORS.rule }, ticks: { maxTicksLimit: 4, callback: (v) => fmt(v, col.metric) } } },
+        plugins: { tooltip: { callbacks: {
+          label: (ctx) => { const g = yearRows[ctx.dataIndex][1]; return [`${g.count} episode${g.count > 1 ? "s" : ""}`, `${fmt(g.total, col.metric)} ${name}`, `${fmt(g.total / g.count, col.metric)} per episode`]; },
+        } } },
+      },
+    });
 
-  DATA.breakdowns.forEach((b, i) => {
-    const btn = tint(el("button", { type: "button" }), b.source);
-    btn.append(el("span", { class: "dot", "aria-hidden": "true" }), el("span", {}, `${b.label} by ${b.kind}`));
-    btn.addEventListener("click", () => show(i));
-    views.append(btn);
-  });
-  show(0);
+    // Cumulative share held by the top episodes: a steep curve means a few hits carry the archive.
+    let run = 0;
+    const shares = sorted.map((v) => (run += v) / (total || 1));
+    const curvePoints = [{ x: 0, y: 0 }, ...shares.map((s, i) => ({ x: ((i + 1) / sorted.length) * 100, y: s * 100 }))];
+    curve.note.textContent = "dashed line = every episode equal";
+    curve.canvas.setAttribute("aria-label", `Top ${k} of ${sorted.length} episodes hold ${Math.round((shares[k - 1] || 0) * 100)}% of ${col.label}`);
+    const cc = upsertChart(curve.canvas, {
+      type: "scatter",
+      data: { datasets: [
+        { data: curvePoints, showLine: true, borderColor: colour, backgroundColor: alpha(colour, 0.1), fill: "origin", borderWidth: 2, pointRadius: 0, pointHoverRadius: 3 },
+        { data: [{ x: 0, y: 0 }, { x: 100, y: 100 }], showLine: true, borderColor: COLORS.rule2, borderDash: [3, 4], borderWidth: 1, pointRadius: 0, pointHoverRadius: 0 },
+        { data: k ? [curvePoints[k]] : [], pointRadius: 4, pointBackgroundColor: COLORS.ink, pointHoverRadius: 5 },
+      ] },
+      options: {
+        interaction: { mode: "nearest", intersect: false, axis: "x" },
+        scales: {
+          x: { min: 0, max: 100, grid: { display: false }, ticks: { stepSize: 50, callback: (v) => (v === 50 ? "50% of episodes" : `${v}%`) } },
+          y: { min: 0, max: 100, border: { display: false }, grid: { color: COLORS.rule }, ticks: { stepSize: 50, callback: (v) => `${v}%` } },
+        },
+        plugins: { tooltip: { filter: (item) => item.datasetIndex === 0 && item.dataIndex > 0, callbacks: {
+          title: (items) => `Top ${items[0].dataIndex} episodes`,
+          label: (ctx) => [`${Math.round(ctx.raw.x)}% of the catalog`, `${Math.round(ctx.raw.y)}% of ${name}`],
+        } } },
+      },
+    });
+    cc.$overlay = { labels: k ? [{ x: curvePoints[k].x, y: curvePoints[k].y, text: `top ${k} → ${Math.round(shares[k - 1] * 100)}%`, dy: 14 }] : [] };
+    cc.draw();
+  }
+  select.addEventListener("change", draw);
+  draw();
 }
 
 /* ---------- sources ---------- */
@@ -1436,7 +1694,7 @@ function renderSources() {
   for (const s of DATA.coverage) {
     const li = tint(el("li"), s.source);
     const name = el("span", { class: "src-name" });
-    name.append(sourceDot(s.source), el("span", {}, s.source));
+    name.append(sourceDot(s.source), PLATFORM_NAMES.has(s.source) ? el("a", { href: `#${s.source}` }, sourceName(s.source)) : el("span", {}, sourceName(s.source)));
     // Where in the report window this source holds data.
     const span = el("div", { class: "span-track", title: s.first_period ? `${s.first_period} – ${s.last_period}` : "no data" });
     if (s.first_period && n) {
@@ -1448,25 +1706,147 @@ function renderSources() {
     }
     const detail = el("div", { class: "src-detail" });
     detail.append(el("span", {}, s.first_period ? `${shortDate(s.first_period)} – ${shortDate(s.last_period)}` : "no data yet"));
-    if (s.last_run_at) detail.append(el("span", { class: "faint" }, ` · last run ${s.last_run_at.replace("T", " ").slice(0, 16)}`));
+    if (s.last_run_at) detail.append(el("span", { class: "faint" }, ` · last run ${runTime(s.last_run_at)}`));
     if (s.last_run_message) detail.append(el("div", { class: "faint" }, s.last_run_message));
     li.append(name, el("span", { class: `status ${s.last_run_status || "none"}` }, s.last_run_status || "never run"), span, detail);
     list.append(li);
   }
 }
 
-// Sections hide themselves when empty before the nav is built, so the nav only lists what exists.
-renderPicker();
-renderStats();
-renderTimeline();
-wireTrack();
-wireMode();
-renderCatalog();
-renderEpisodes();
-renderAudience();
-renderItems();
-renderSources();
-renderChrome();
+/* ---------- platform tab ---------- */
+
+// A titled section with a mount point, for the platform panel's tables.
+function section(title, note) {
+  const box = el("section"), head = el("div", { class: "section-head" }), mount = el("div");
+  head.append(el("h2", {}, title), el("span", { class: "note" }, note || ""));
+  box.append(head, mount);
+  document.getElementById("platform-body").append(box);
+  return { mount, note: head.lastChild };
+}
+
+function renderPlatform(source) {
+  const p = DATA.platforms.find((x) => x.source === source) || { description: "" }, run = RUNS[source] || {};
+  const head = tint(document.getElementById("phead"), source);
+  head.replaceChildren();
+  const h1 = el("h1");
+  h1.append(sourceDot(source), el("span", {}, sourceName(source)));
+  const runBox = el("div", { class: "p-run" });
+  runBox.append(el("span", { class: `status ${run.last_run_status || "none"}` }, run.last_run_status || "never run"), el("br"),
+    el("span", {}, run.last_run_at ? `last run ${runTime(run.last_run_at)}` : "never collected"),
+    el("br"), el("span", {}, run.first_period ? `data ${shortDate(run.first_period)} – ${shortDate(run.last_period)}` : "no data yet"));
+  head.append(h1, runBox, el("div", { class: "p-about" }, p.description));
+  if (run.last_run_message) head.append(el("div", { class: "p-msg" }, run.last_run_message));
+
+  const body = document.getElementById("platform-body");
+  body.replaceChildren();
+  activeTable = null;
+  const columns = DATA.episodes.columns.filter((c) => c.source === source);
+  const withData = columns.some((c) => DATA.episodes.rows.some((r) => has(r.values[c.key])));
+  if (withData) {
+    const s = section("Episodes");
+    renderEpisodes(s.mount, columns, s.note, { onlyWithData: true });
+  }
+  for (const t of DATA.items.filter((x) => x.source === source && x.rows.length)) {
+    const s = section(`${t.entity_type.charAt(0).toUpperCase()}${t.entity_type.slice(1)}s`, `${t.rows.length} tracked · latest readings, not affected by the range`);
+    renderItemTable(s.mount, t);
+  }
+  if (!withData && !DATA.items.some((x) => x.source === source && x.rows.length)) {
+    body.append(el("p", { class: "empty" }, `${sourceName(source)} has no per-episode numbers or tracked posts yet; its totals are above.`));
+  }
+}
+
+/* ---------- tabs ---------- */
+
+function renderChrome() {
+  document.getElementById("title").textContent = DATA.show_title;
+  const generated = runTime(DATA.generated_at);
+  document.getElementById("meta").textContent = `Data through ${shortDate(DATA.today)} · generated ${generated} UTC`;
+
+  // Tabs: Overview, then each platform in collector order. A tab is a link to its hash, so route() opens it.
+  const tabs = document.getElementById("tabs");
+  for (const id of ["overview", ...PLATFORM_NAMES]) {
+    const overview = id === "overview", failing = RUNS[id]?.last_run_status === "failed";
+    const tab = el("a", {
+      href: `#${id}`, role: "tab", id: `tab-${id}`, "aria-controls": overview ? "panel-overview" : "panel-platform",
+      "aria-selected": "false", tabindex: "-1", title: failing ? `${sourceName(id)}: the last collection failed` : null,
+    });
+    if (!overview) tint(tab, id).append(el("span", { class: `dot${failing ? " failing" : ""}`, "aria-hidden": "true" }));
+    tab.append(el("span", {}, overview ? "Overview" : sourceName(id)));
+    tabs.append(tab);
+  }
+  // Arrow keys, Home, and End move between tabs and open the one reached (the WAI-ARIA tabs pattern).
+  tabs.addEventListener("keydown", (ev) => {
+    const list = [...tabs.querySelectorAll('[role="tab"]')], at = list.indexOf(document.activeElement);
+    const next = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: list.length - 1 }[ev.key];
+    if (at === -1 || next === undefined) return;
+    ev.preventDefault();
+    const target = list[(next + list.length) % list.length];
+    target.focus();
+    location.hash = target.getAttribute("href");
+  });
+
+  // One glance at collector health; the link jumps to the details on the overview.
+  const health = document.getElementById("health");
+  const failing = DATA.coverage.filter((s) => s.last_run_status === "failed").length, total = DATA.coverage.length;
+  health.classList.toggle("bad", failing > 0 || !total);
+  health.append(el("span", { class: "dot", "aria-hidden": "true" }),
+    el("span", {}, !total ? "no sources yet" : failing ? `${failing}/${total} sources failing` : `${total} sources ok`));
+}
+
+let overviewTable = null;
+function showTab(tab) {
+  const changed = tab !== state.tab, overview = tab === "overview";
+  state.tab = tab;
+  document.querySelectorAll('#tabs [role="tab"]').forEach((a) => {
+    const on = a.id === `tab-${tab}`;
+    a.setAttribute("aria-selected", String(on));
+    a.tabIndex = on ? 0 : -1;
+  });
+  document.getElementById("panel-overview").hidden = !overview;
+  const panel = document.getElementById("panel-platform");
+  panel.hidden = overview;
+  if (overview) {
+    activeTable = overviewTable;
+  } else {
+    panel.setAttribute("aria-labelledby", `tab-${tab}`);
+    renderPlatform(tab);
+  }
+  // The one chart row moves into the open tab.
+  document.getElementById(overview ? "slot-overview" : "slot-platform").append(document.getElementById("chart-row"));
+  // A platform tab opens on one of its own series; the overview keeps whatever was being looked at.
+  if (!overview && CHARTS.get(state.key)?.source !== tab) state.key = defaultKey(tab);
+  document.title = overview ? `${DATA.show_title} · Listening report` : `${sourceName(tab)} · ${DATA.show_title}`;
+  renderPicker();
+  refresh();
+  if (changed) window.scrollTo(0, 0);
+}
+
+// "#youtube" opens that platform; any other hash is a section on the overview (e.g. #sources from the health badge).
+function route() {
+  const id = decodeURIComponent(location.hash.slice(1));
+  const tab = PLATFORM_NAMES.has(id) ? id : "overview";
+  showTab(tab);
+  const target = tab === "overview" && id && id !== "overview" ? document.getElementById(id) : null;
+  if (target) requestAnimationFrame(() => target.scrollIntoView());
+}
+
+/* ---------- start ---------- */
+
+// Charts draw on canvas, which can't re-flow text, so they wait for the embedded font.
+document.fonts.ready.then(() => {
+  renderChrome();
+  renderRange();
+  buildPlatformCards();
+  wireTimeline();
+  wireCompare();
+  renderEpisodes(document.getElementById("episodes"), DATA.episodes.columns.filter((c) => c.headline), document.getElementById("episodes-note"));
+  overviewTable = activeTable;
+  renderCatalog();
+  renderSources();
+  window.addEventListener("hashchange", route);
+  window.addEventListener("beforeprint", () => Object.values(Chart.instances).forEach((c) => c.resize()));
+  route();
+});
 </script>
 </body>
 </html>

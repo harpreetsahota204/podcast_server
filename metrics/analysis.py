@@ -14,7 +14,7 @@ from core.config import settings
 from exporters.youtube import read_thumbnail_changes
 from metrics.episodes import EpisodeIndex
 from metrics.models import ACCOUNT, SHOW, MetricSpec
-from metrics.registry import metric_specs
+from metrics.registry import available_collectors, metric_specs
 from metrics.store import MetricsStore
 
 # Entity types that describe the whole show or account rather than one item (episode, post, video).
@@ -24,6 +24,11 @@ LAUNCH_DAYS = 7
 TOP_BREAKDOWN_ROWS = 10
 
 Specs = dict[tuple[str, str], MetricSpec]
+
+
+def series_key(source: str, metric: str, entity_type: str) -> str:
+    """Id of one metric series, shared by its number, chart, or trend so the dashboard can link them."""
+    return f"{source}.{metric}.{entity_type}"
 
 
 def spec_for(specs: Specs, source: str, metric: str) -> MetricSpec:
@@ -50,8 +55,10 @@ def _windows(days: int, today: date) -> tuple[date, date, date]:
     return start - timedelta(days=days), start, end
 
 
-def headline_numbers(store: MetricsStore, specs: Specs, days: int, today: date) -> list[dict[str, Any]]:
-    """Top-line numbers for headline metrics, each compared with the window before it.
+def headline_numbers(
+    store: MetricsStore, specs: Specs, days: int, today: date, headline_only: bool = True
+) -> list[dict[str, Any]]:
+    """Top-line numbers for headline metrics (or every metric), each compared with the window before it.
 
     Day metrics are summed over the window. Account snapshots (e.g. followers) report the
     latest reading. Item snapshots (post impressions, video lifetime views) sum every
@@ -62,11 +69,16 @@ def headline_numbers(store: MetricsStore, specs: Specs, days: int, today: date) 
     for item in store.metric_inventory():
         source, metric, granularity, entity_type = item["source"], item["metric"], item["granularity"], item["entity_type"]
         spec = spec_for(specs, source, metric)
-        if not spec.headline:
+        if headline_only and not spec.headline:
             continue
         if granularity == "day" and entity_type == SHOW:
             current = sum(store.daily_series(source, metric, start.isoformat(), end.isoformat()).values())
-            previous = sum(store.daily_series(source, metric, prev_start.isoformat(), start.isoformat()).values())
+            # A previous window the source only partly covers would make any change look huge, so it isn't compared.
+            covered = item["first_period"] <= prev_start.isoformat()
+            previous = (
+                sum(store.daily_series(source, metric, prev_start.isoformat(), start.isoformat()).values())
+                if covered else None
+            )
             basis = f"total, last {days} days"
         elif granularity == "snapshot" and entity_type == ACCOUNT:
             current, previous = _account_latest(store, source, metric, start)
@@ -81,7 +93,9 @@ def headline_numbers(store: MetricsStore, specs: Specs, days: int, today: date) 
         else:
             continue
         numbers.append({
-            "source": source, "metric": metric, "label": spec.label, "description": spec.description,
+            "key": series_key(source, metric, entity_type), "source": source, "metric": metric,
+            "granularity": granularity, "entity_type": entity_type, "headline": spec.headline,
+            "label": spec.label, "description": spec.description,
             "basis": basis, "current": current, "previous": previous, "change_pct": _change_pct(current, previous),
         })
     return numbers
@@ -112,15 +126,56 @@ def daily_charts(store: MetricsStore, specs: Specs, days: int, today: date) -> l
         spec = spec_for(specs, source, metric)
         values = store.daily_series(source, metric, start.isoformat(), end.isoformat())
         charts.append({
-            "source": source, "metric": metric, "label": spec.label, "description": spec.description,
+            "key": series_key(source, metric, SHOW), "kind": "day", "source": source, "metric": metric,
+            "label": spec.label, "description": spec.description,
             "headline": spec.headline, "series": [[d, values.get(d, 0.0)] for d in dates],
         })
     return sorted(charts, key=lambda c: (not c["headline"], c["source"], c["metric"]))
 
 
-def breakdowns(store: MetricsStore, specs: Specs, days: int, today: date) -> list[dict[str, Any]]:
-    """Top values for every breakdown kind (apps, countries, ...) of every show-level day metric."""
+def snapshot_trends(store: MetricsStore, specs: Specs, days: int, today: date) -> list[dict[str, Any]]:
+    """Daily level of every snapshot metric: the sum of each entity's latest reading as of that day.
+
+    For an account that's the running count (followers over time); for posts or videos it's
+    the running total across every tracked item, so a new post shows up as a step. Readings
+    from before the window seed the first day; days before any reading are None, not zero.
+    """
     _, start, end = _windows(days, today)
+    dates = _date_range(start, end)
+    trends = []
+    for item in store.metric_inventory():
+        if item["granularity"] != "snapshot":
+            continue
+        source, metric, entity_type = item["source"], item["metric"], item["entity_type"]
+        spec = spec_for(specs, source, metric)
+        readings = store.snapshot_readings(source, metric, entity_type)
+        # Walk the readings (oldest first) alongside the dates, carrying each entity's last value forward.
+        latest: dict[str, float] = {}
+        cursor, series = 0, []
+        for day in dates:
+            while cursor < len(readings) and readings[cursor][0] <= day:
+                _, entity_id, value = readings[cursor]
+                latest[entity_id] = value
+                cursor += 1
+            series.append([day, sum(latest.values()) if latest else None])
+        trends.append({
+            "key": series_key(source, metric, entity_type), "kind": "snapshot", "source": source, "metric": metric,
+            "entity_type": entity_type, "label": spec.label, "description": spec.description,
+            "headline": spec.headline, "tracked": len({entity_id for _, entity_id, _ in readings}), "series": series,
+        })
+    return sorted(trends, key=lambda t: (not t["headline"], t["source"], t["metric"]))
+
+
+def breakdowns(
+    store: MetricsStore, specs: Specs, days: int, today: date, with_daily: bool = False
+) -> list[dict[str, Any]]:
+    """Top values for every breakdown kind (apps, countries, ...) of every show-level day metric.
+
+    `with_daily` adds each top value's day-by-day amounts (and the rest's, as `other_daily`),
+    aligned to the window's dates, so the dashboard can total any range or stretch inside it.
+    """
+    _, start, end = _windows(days, today)
+    dates = _date_range(start, end)
     result = []
     for item in store.metric_inventory():
         if item["granularity"] != "day" or item["entity_type"] != SHOW:
@@ -128,17 +183,50 @@ def breakdowns(store: MetricsStore, specs: Specs, days: int, today: date) -> lis
         source, metric = item["source"], item["metric"]
         for kind in store.dimension_kinds(source, metric):
             rows = store.dimension_totals(source, metric, start.isoformat(), end.isoformat(), kind)
-            if rows:
-                result.append({
-                    "source": source, "metric": metric, "label": spec_for(specs, source, metric).label,
-                    "kind": kind, "rows": [[name, value] for name, value in rows[:TOP_BREAKDOWN_ROWS]],
-                    "other": sum(value for _, value in rows[TOP_BREAKDOWN_ROWS:]),
-                })
+            if not rows:
+                continue
+            top = rows[:TOP_BREAKDOWN_ROWS]
+            entry: dict[str, Any] = {
+                "source": source, "metric": metric, "label": spec_for(specs, source, metric).label,
+                "kind": kind, "rows": [[name, value] for name, value in top],
+                "other": sum(value for _, value in rows[TOP_BREAKDOWN_ROWS:]),
+            }
+            if with_daily:
+                daily = store.dimension_daily(source, metric, start.isoformat(), end.isoformat(), kind)
+                top_names = {name for name, _ in top}
+                entry["daily"] = {name: [daily[name].get(d, 0.0) for d in dates] for name in top_names}
+                entry["other_daily"] = [
+                    sum(by_day.get(d, 0.0) for name, by_day in daily.items() if name not in top_names) for d in dates
+                ]
+            result.append(entry)
     return result
 
 
-def episode_table(store: MetricsStore, specs: Specs, episodes: EpisodeIndex) -> dict[str, Any]:
-    """One row per catalog episode with all-time and launch-window totals for headline metrics.
+def episode_daily(
+    store: MetricsStore, columns: list[dict[str, Any]], dates: list[str]
+) -> dict[str, dict[str, list[float]]]:
+    """Day-by-day amounts per episode for the episode table's daily columns, aligned to `dates`.
+
+    Column key ("youtube.views") → slug → one value per date; episodes with nothing in the
+    window are left out. Lets the dashboard total each episode over any range or stretch.
+    """
+    result: dict[str, dict[str, list[float]]] = {}
+    for column in columns:
+        if column["kind"] != "day":
+            continue
+        by_slug = store.episode_daily_by_slug(column["source"], column["metric"])
+        result[column["key"]] = {
+            slug: [daily.get(d, 0.0) for d in dates]
+            for slug, daily in by_slug.items()
+            if any(daily.get(d) for d in dates)
+        }
+    return result
+
+
+def episode_table(
+    store: MetricsStore, specs: Specs, episodes: EpisodeIndex, headline_only: bool = True
+) -> dict[str, Any]:
+    """One row per catalog episode with all-time and launch-window totals for headline metrics (or every metric).
 
     The launch column ("first 7 days") is only filled when the source's data starts on or
     before the release date; otherwise it would silently undercount older episodes.
@@ -149,14 +237,18 @@ def episode_table(store: MetricsStore, specs: Specs, episodes: EpisodeIndex) -> 
     for item in store.metric_inventory():
         source, metric, granularity, entity_type = item["source"], item["metric"], item["granularity"], item["entity_type"]
         spec = spec_for(specs, source, metric)
-        if not spec.headline:
+        if headline_only and not spec.headline:
             continue
         key = f"{source}.{metric}"
+        # What every column carries, so the dashboard can pick one platform's columns, or only headline ones.
+        about = {"label": spec.label, "source": source, "metric": metric, "headline": spec.headline}
         if granularity == "day" and entity_type not in UNLINKED:
-            columns.append({"key": key, "label": spec.label, "source": source, "basis": "all collected"})
+            columns.append({"key": key, **about, "kind": "day", "basis": "all collected"})
             launch_key = f"{key}.launch"
-            columns.append({"key": launch_key, "label": f"{spec.label}, first {LAUNCH_DAYS}d", "source": source,
-                            "basis": f"first {LAUNCH_DAYS} days after release"})
+            columns.append({
+                "key": launch_key, **about, "kind": "launch", "label": f"{spec.label}, first {LAUNCH_DAYS}d",
+                "basis": f"first {LAUNCH_DAYS} days after release",
+            })
             daily_by_slug = store.episode_daily_by_slug(source, metric)
             for slug, daily in daily_by_slug.items():
                 values[slug][key] = sum(daily.values())
@@ -166,7 +258,7 @@ def episode_table(store: MetricsStore, specs: Specs, episodes: EpisodeIndex) -> 
                     launch_end = (date.fromisoformat(info.published_on) + timedelta(days=LAUNCH_DAYS)).isoformat()
                     values[slug][launch_key] = sum(v for d, v in daily.items() if info.published_on <= d < launch_end)
         elif granularity == "snapshot" and entity_type not in UNLINKED:
-            columns.append({"key": key, "label": spec.label, "source": source, "basis": f"{entity_type}s linked to the episode"})
+            columns.append({"key": key, **about, "kind": "snapshot", "basis": f"{entity_type}s linked to the episode"})
             linked = {e["entity_id"]: e["episode_slug"] for e in store.entities(source, entity_type) if e["episode_slug"]}
             for entity_id, (value, _) in store.latest_snapshots(source, metric, entity_type).items():
                 if entity_id in linked:
@@ -229,6 +321,17 @@ def coverage(store: MetricsStore) -> list[dict[str, Any]]:
     return rows
 
 
+def platforms(store: MetricsStore) -> list[dict[str, str]]:
+    """Sources that hold data or have run, in collector order, each with what its collector measures.
+
+    A source with stored data but no collector any more (a removed plugin) is still listed, last.
+    """
+    present = {item["source"] for item in store.metric_inventory()} | set(store.latest_runs())
+    known = {name: cls.description for name, cls in available_collectors().items()}
+    ordered = [name for name in known if name in present] + sorted(present - known.keys())
+    return [{"source": name, "description": known.get(name, "")} for name in ordered]
+
+
 def events(episodes: EpisodeIndex, since: str) -> list[dict[str, Any]]:
     """Things that can explain a change in the numbers, on or after `since`: releases and thumbnail changes."""
     found = [
@@ -251,22 +354,34 @@ def _today(today: date | None) -> date:
 
 
 def build_dashboard_data(days: int = 90, today: date | None = None) -> dict[str, Any]:
-    """Everything the HTML dashboard renders, as one JSON-serializable dict."""
+    """Everything the HTML dashboard renders, as one JSON-serializable dict.
+
+    Every metric is included, not only headline ones: the overview shows the headlines,
+    and each platform's tab shows all of that source's numbers, series, and tables.
+    """
     today = _today(today)
     specs = metric_specs()
     episodes = EpisodeIndex.from_catalog()
+    _, start, end = _windows(days, today)
+    dates = _date_range(start, end)
     with MetricsStore(settings.metrics_db_path) as store:
+        table = episode_table(store, specs, episodes, headline_only=False)
         return {
             "show_title": settings.podcast_title,
             "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
             "days": days,
             "today": today.isoformat(),
-            "headlines": headline_numbers(store, specs, days, today),
+            "dates": dates,
+            "platforms": platforms(store),
+            "numbers": headline_numbers(store, specs, days, today, headline_only=False),
             "charts": daily_charts(store, specs, days, today),
-            "breakdowns": breakdowns(store, specs, days, today),
-            "episodes": episode_table(store, specs, episodes),
+            "trends": snapshot_trends(store, specs, days, today),
+            "breakdowns": breakdowns(store, specs, days, today, with_daily=True),
+            "episodes": table,
+            "episode_daily": episode_daily(store, table["columns"], dates),
             "events": events(episodes, (today - timedelta(days=days - 1)).isoformat()),
-            "items": items_table(store, specs),
+            # Platform tabs list every tracked post or video, not just the newest few.
+            "items": items_table(store, specs, limit=1000),
             "coverage": coverage(store),
         }
 

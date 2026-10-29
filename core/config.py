@@ -107,10 +107,11 @@ class Settings(BaseSettings):
         default=Path.home() / ".config" / "podcast_server" / "substack_cookies.json",
         description="Session cookie file written by `python -m exporters.substack_post login`",
     )
-    # Instagram posting uses a system-user token that controls the account, so it lives in its own 0600 file
-    # (written by `python -m exporters.instagram login`), never in .env.
+    # Instagram posting and metrics use a Page or system-user token that controls the account, so it lives in its
+    # own 0600 file (written by `python -m exporters.instagram login`), never in .env.
     instagram_username: str | None = Field(
-        default=None, description="Instagram professional account to post as (no @); unset disables posting"
+        default=None,
+        description="Instagram professional account to post as and measure (no @); unset disables posting and metrics",
     )
     instagram_token_path: Path = Field(
         default=Path.home() / ".config" / "podcast_server" / "instagram_token.json",

@@ -211,6 +211,22 @@ class MetricsStore:
         ).fetchall()
         return [(row[0], row[1]) for row in rows]
 
+    def dimension_daily(self, source: str, metric: str, start: str, end: str, kind: str) -> dict[str, dict[str, float]]:
+        """Show-level day values per breakdown value of one kind in [start, end): value name → {date → value}."""
+        rows = self.conn.execute(
+            """
+            SELECT SUBSTR(dimension, LENGTH(?) + 2), period, SUM(value) FROM observations
+            WHERE source = ? AND metric = ? AND granularity = 'day' AND entity_type = ?
+              AND SUBSTR(dimension, 1, LENGTH(?) + 1) = ? AND period >= ? AND period < ?
+            GROUP BY dimension, period
+            """,
+            (kind, source, metric, SHOW, kind, f"{kind}=", start, end),
+        ).fetchall()
+        by_value: defaultdict[str, dict[str, float]] = defaultdict(dict)
+        for name, period, value in rows:
+            by_value[name][period] = value
+        return dict(by_value)
+
     def dimension_kinds(self, source: str, metric: str) -> list[str]:
         """Breakdown kinds (the part before '=') recorded for a show-level day metric."""
         rows = self.conn.execute(
@@ -281,6 +297,18 @@ class MetricsStore:
             (source, metric, entity_type, entity_id),
         ).fetchall()
         return {row[0]: row[1] for row in rows}
+
+    def snapshot_readings(self, source: str, metric: str, entity_type: str) -> list[tuple[str, str, float]]:
+        """Every snapshot reading of one metric across all its entities, oldest first: (period, entity id, value)."""
+        rows = self.conn.execute(
+            """
+            SELECT period, entity_id, value FROM observations
+            WHERE source = ? AND metric = ? AND granularity = 'snapshot' AND entity_type = ? AND dimension = ''
+            ORDER BY period
+            """,
+            (source, metric, entity_type),
+        ).fetchall()
+        return [(row[0], row[1], row[2]) for row in rows]
 
     def entities(self, source: str | None = None, entity_type: str | None = None) -> list[dict[str, Any]]:
         """Stored entities, optionally filtered, newest `created_at` first."""
