@@ -14,8 +14,6 @@ Save the cookie once (and again whenever it expires):
     uv run python -m exporters.substack_post login
 """
 
-import json
-import os
 import sys
 from datetime import UTC, datetime
 from getpass import getpass
@@ -27,6 +25,7 @@ from markdown_it import MarkdownIt
 from substack import Api
 
 from core.config import settings
+from core.credentials import write_private_json
 from core.jsonl import append_record, read_records
 from exporters.blog_post import CrosspostSource, crosspost_source
 
@@ -36,18 +35,20 @@ MAX_ERROR_CHARS = 300
 REQUEST_TIMEOUT_SECONDS = 60
 # How many of the newest published posts the existing-draft check looks through.
 RECENT_POSTS_CHECKED = 50
+# Page size when listing every published post (for metrics).
+PUBLISHED_PAGE_SIZE = 50
 # Substack has used both cookie names for the session; sending both covers old and new accounts.
 SESSION_COOKIE_NAMES = ("substack.sid", "connect.sid")
 
 
 class SubstackError(RuntimeError):
-    """Substack drafts are not configured, or Substack rejected or didn't answer a request."""
+    """Substack is not configured (publication URL or session cookie), or Substack rejected or didn't answer a request."""
 
 
 def _publication_url() -> str:
     """Return SUBSTACK_PUBLICATION_URL, or raise if Substack drafts aren't configured."""
     if not settings.substack_publication_url:
-        raise SubstackError("Substack drafts are off: set SUBSTACK_PUBLICATION_URL (e.g. https://name.substack.com).")
+        raise SubstackError("Substack is off: set SUBSTACK_PUBLICATION_URL (e.g. https://name.substack.com).")
     return settings.substack_publication_url
 
 
@@ -196,19 +197,25 @@ def crosspost_to_substack(slug: str, dry_run: bool = False) -> dict[str, Any]:
     return result
 
 
+def published_posts() -> list[dict[str, Any]]:
+    """Every published post on the publication, newest first, with Substack's per-post `stats` (private API)."""
+    api = _client(_publication_url())
+    posts: list[dict[str, Any]] = []
+    while True:
+        try:
+            page = _posts_in(api.get_published_posts(offset=len(posts), limit=PUBLISHED_PAGE_SIZE))
+        except Exception as exc:
+            raise SubstackError(f"Couldn't list Substack posts ({_detail(exc)}).") from exc
+        posts += page
+        if len(page) < PUBLISHED_PAGE_SIZE:
+            return posts
+
+
 def save_session_cookie(value: str) -> Path:
     """Write the session cookie to SUBSTACK_COOKIES_PATH, readable only by this user, and return the path."""
-    path = settings.substack_cookies_path.expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Browsers show the value URL-encoded (s%3A...); python-substack expects it decoded, as in its cookie-string login.
     cookies = dict.fromkeys(SESSION_COOKIE_NAMES, unquote(value.strip()))
-    # A new file is created 0600, so the cookie is never readable by others, even briefly; the creation mode
-    # doesn't apply to a file that already exists, so chmod tightens one left with looser permissions.
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as cookie_file:
-        json.dump(cookies, cookie_file)
-    path.chmod(0o600)
-    return path
+    return write_private_json(settings.substack_cookies_path.expanduser(), cookies)
 
 
 def substack_publication() -> str:

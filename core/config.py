@@ -104,6 +104,15 @@ class Settings(BaseSettings):
         default=Path.home() / ".config" / "podcast_server" / "substack_cookies.json",
         description="Session cookie file written by `python -m exporters.substack_post login`",
     )
+    # Instagram posting uses a system-user token that controls the account, so it lives in its own 0600 file
+    # (written by `python -m exporters.instagram login`), never in .env.
+    instagram_username: str | None = Field(
+        default=None, description="Instagram professional account to post as (no @); unset disables posting"
+    )
+    instagram_token_path: Path = Field(
+        default=Path.home() / ".config" / "podcast_server" / "instagram_token.json",
+        description="Access token file written by `python -m exporters.instagram login`",
+    )
 
     # --- Metrics (all optional; each source is collected only once it's configured) ---
     metrics_db_path: Path | None = None
@@ -236,6 +245,11 @@ class Settings(BaseSettings):
     def substack_post_log_path(self) -> Path:
         """Append-only record of every Substack draft the engine created (one JSON object per line)."""
         return self.data_dir / "social" / "substack_posts.jsonl"
+
+    @property
+    def instagram_post_log_path(self) -> Path:
+        """Append-only record of every Instagram post the engine published (one JSON object per line)."""
+        return self.data_dir / "social" / "instagram_posts.jsonl"
 
     @property
     def excluded_episodes_file(self) -> Path:

@@ -23,6 +23,7 @@ from core.storage import R2StorageClient
 from core.thumbnail import generate_youtube_thumbnail, render_thumbnail
 from exporters.blog_post import blog_post_path, create_blog_post
 from exporters.devto import crosspost_to_devto
+from exporters.instagram import PostType, post_to_instagram
 from exporters.social import draft_social_package
 from exporters.substack_post import crosspost_to_substack
 from exporters.x_post import post_to_x
@@ -45,13 +46,18 @@ Self-hosted podcast publishing engine. Before any podcast task, read the show pl
 the playbook wins on anything show-specific.
 Rules that always apply:
 - Nothing goes public without explicit human approval of the exact content. Public tools: podcast_publish, \
-podcast_update_episode, podcast_deploy_site, podcast_post_to_x, podcast_publish_to_youtube, \
-podcast_set_youtube_thumbnail.
+podcast_update_episode, podcast_deploy_site, podcast_post_to_x, podcast_post_to_instagram, \
+podcast_publish_to_youtube, podcast_set_youtube_thumbnail.
 - Episode GUIDs and slugs are permanent, and excluded episodes stay excluded. When a tool refuses, report why; \
 never work around it.
 - If a public call fails, read {settings.data_dir / "social"}/*.jsonl before retrying, so nothing is posted twice.
 - Use these tools instead of editing catalog.db, the website repo, or R2 directly.
-- After publishing or editing an episode, run podcast_backup."""
+- After publishing or editing an episode, run podcast_backup.
+- podcast_crosspost_to_devto and podcast_crosspost_to_substack only create unpublished drafts, and only for a blog \
+post already live on the site; the human publishes each draft on its platform.
+- Never ask the human to paste a password, token, or session cookie into chat, and never read credential files. When a \
+tool says a feature is off or a login expired, relay its message and the matching setup step in \
+{PROJECT_ROOT / "ADOPTING.md"}."""
 
 mcp = FastMCP("podcast-server", instructions=INSTRUCTIONS)
 
@@ -423,6 +429,20 @@ def podcast_post_to_x(
 ) -> dict[str, Any]:
     """Post to X as the configured account (only after explicit human approval of the exact text and media). Attaches one optional image, GIF, or video; dry_run checks everything without posting. Pass episode_slug when promoting an episode so the post's metrics are credited to it. Returns the post id and URL."""
     return post_to_x(text=text, media_path=media_path, dry_run=dry_run, episode_slug=episode_slug)
+
+
+@mcp.tool(annotations=PUBLIC_RELEASE)
+def podcast_post_to_instagram(
+    media_paths: list[str],
+    caption: str = "",
+    post_type: PostType = "image",
+    dry_run: bool = False,
+    episode_slug: str | None = None,
+) -> dict[str, Any]:
+    """Publish a feed post to the configured Instagram professional account (only after explicit human approval of the exact image and caption). post_type "image": one PNG, JPEG, or WebP with an aspect ratio between 4:5 and 1.91:1, converted to JPEG and staged on the public R2 domain for Instagram to fetch. Captions: up to 2,200 characters and 30 hashtags; links in captions aren't clickable on Instagram. dry_run checks everything (including the image) without uploading or posting. The same image with the same caption is never posted twice: that post is returned instead. Pass episode_slug when promoting an episode. Returns the media id and post URL."""
+    return post_to_instagram(
+        media_paths=media_paths, caption=caption, post_type=post_type, dry_run=dry_run, episode_slug=episode_slug
+    )
 
 
 # Additive, not public: it only creates an unpublished draft, which the human publishes on dev.to.

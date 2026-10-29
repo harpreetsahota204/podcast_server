@@ -31,7 +31,7 @@ MAX_ERROR_CHARS = 300
 
 
 class DevtoError(RuntimeError):
-    """Cross-posting is not configured, or dev.to rejected or didn't answer a request."""
+    """dev.to is not configured (no API key), or dev.to rejected or didn't answer a request."""
 
 
 def _api_key() -> str:
@@ -60,13 +60,27 @@ def _request(path: str, payload: dict[str, Any] | None = None) -> Any:
         detail = exc.read().decode("utf-8", errors="replace").strip()
         raise DevtoError(f"dev.to HTTP {exc.code}: {detail}"[:MAX_ERROR_CHARS]) from exc
     except OSError as exc:
-        # A timeout after a POST leaves the outcome unknown; the existing-draft check makes a retry safe.
-        raise DevtoError(f"dev.to didn't answer ({exc}). Calling again is safe: an existing draft is found first.") from exc
+        # A timeout after a POST leaves the outcome unknown (crosspost_to_devto checks for the article before retrying).
+        raise DevtoError(f"dev.to didn't answer ({exc}); a create may still have gone through.") from exc
 
 
 def devto_username() -> str:
     """The dev.to account the API key belongs to (used by the setup doctor)."""
     return str(_request("/users/me")["username"])
+
+
+def my_articles() -> list[dict[str, Any]]:
+    """The account's own dev.to articles, published and drafts, newest first."""
+    return _request(MY_ARTICLES_PATH)
+
+
+def create_article(article: dict[str, Any]) -> dict[str, Any]:
+    """Create one dev.to article from a ready payload and return dev.to's response (`id`, `url`).
+
+    The caller owns the content and its checks; `crosspost_to_devto` is the guarded
+    path for the show's own blog posts.
+    """
+    return _request("/articles", {"article": article})
 
 
 def validate_tags(tags: list[str] | None) -> list[str]:
@@ -85,7 +99,7 @@ def _find_existing_draft(slug: str, canonical_url: str) -> dict[str, Any] | None
     for record in reversed(read_records(settings.devto_post_log_path)):
         if record.get("slug") == slug and record.get("article_id"):
             return {"article_id": record["article_id"], "url": record["url"]}
-    for article in _request(MY_ARTICLES_PATH):
+    for article in my_articles():
         if article.get("canonical_url") == canonical_url:
             return {"article_id": article["id"], "url": article["url"]}
     return None
@@ -121,7 +135,7 @@ def crosspost_to_devto(slug: str, tags: list[str] | None = None, dry_run: bool =
     if existing := _find_existing_draft(slug, source.canonical_url):
         return {"status": "exists", **summary, **existing, "dashboard_url": DASHBOARD_URL}
 
-    created = _request("/articles", {"article": article})
+    created = create_article(article)
     record = {"created_at": datetime.now(UTC).isoformat(), **summary, "article_id": created["id"], "url": created["url"]}
     result: dict[str, Any] = {
         "status": "draft_created",

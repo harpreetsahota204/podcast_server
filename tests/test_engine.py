@@ -814,5 +814,275 @@ class SubstackTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text()), {"substack.sid": "s:abc.def", "connect.sid": "s:abc.def"})
 
 
+class InstagramTests(unittest.TestCase):
+    """Posting to Instagram: pre-upload guards, JPEG staging, Meta's container flow, the post log, and the token file.
+
+    open_https and the R2 client are always mocked, so no test talks to Instagram or R2.
+    """
+
+    TOKEN = "IGAA-secret-token"  # noqa: S105 - fake token; tests assert it never leaks into URLs, errors, or logs
+
+    def setUp(self) -> None:
+        """Point settings at a temp data dir and token file with posting on, and draw one 16:9 PNG to post."""
+        from PIL import Image
+
+        from exporters.instagram import _save_token
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.saved = (settings.data_dir, settings.instagram_username, settings.instagram_token_path)
+        settings.data_dir, settings.instagram_username = self.tmp / "data", "testshow"
+        settings.instagram_token_path = self.tmp / "instagram_token.json"
+        _save_token({"user_id": "17841", "username": "testshow", "access_token": self.TOKEN})
+        self.image = self.tmp / "ep-one-final.png"
+        Image.new("RGBA", (1920, 1080), (10, 20, 30, 255)).save(self.image)
+
+    def tearDown(self) -> None:
+        """Restore settings and remove the temp dir."""
+        settings.data_dir, settings.instagram_username, settings.instagram_token_path = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _replies(*bodies: Any) -> mock.MagicMock:
+        """Mock open_https returning each body in turn as a JSON response."""
+        return mock.MagicMock(side_effect=[io.BytesIO(json.dumps(body).encode()) for body in bodies])
+
+    @staticmethod
+    def _r2(exists: bool = False) -> mock.MagicMock:
+        """Mock R2StorageClient class whose instance is configured and serves keys from the test audio domain."""
+        r2 = mock.MagicMock()
+        client = r2.return_value
+        client.is_configured.return_value = True
+        client.object_exists.return_value = exists
+        client.public_url.side_effect = lambda key: f"https://audio.example.com/{key}"
+        return r2
+
+    @staticmethod
+    def _offline(request: Any = mock.DEFAULT, r2: Any = mock.DEFAULT) -> Any:
+        """Patch Meta requests and the R2 client together; yields the mocks created for the defaults."""
+        return mock.patch.multiple("exporters.instagram", open_https=request, R2StorageClient=r2)
+
+    def _write_token(self, **changes: Any) -> None:
+        """Rewrite the saved token file with some fields changed."""
+        token = json.loads(settings.instagram_token_path.read_text())
+        settings.instagram_token_path.write_text(json.dumps({**token, **changes}))
+
+    def test_bad_input_and_missing_config_refused_before_any_upload(self) -> None:
+        """Secret files, bad shapes, long captions, bad slugs, and missing setup never reach R2 or Instagram."""
+        from PIL import Image
+
+        from exporters.instagram import InstagramError, post_to_instagram
+
+        secret = self.tmp / ".env"
+        secret.write_text("TOKEN=abc")
+        too_tall = self.tmp / "tall.png"
+        Image.new("RGB", (400, 1000)).save(too_tall)
+        refusals: list[tuple[dict[str, Any], type[Exception]]] = [
+            ({"media_paths": [str(secret)]}, ValueError),
+            ({"media_paths": [str(too_tall)]}, ValueError),
+            ({"media_paths": [str(self.image), str(self.image)]}, ValueError),
+            ({"media_paths": [str(self.image)], "caption": "x" * 2201}, ValueError),
+            ({"media_paths": [str(self.image)], "caption": " ".join(f"#tag{i}" for i in range(31))}, ValueError),
+            ({"media_paths": [str(self.image)], "episode_slug": "../not-a-slug"}, ValueError),
+        ]
+        with self._offline() as patched:
+            for kwargs, error in refusals:
+                with self.subTest(kwargs=kwargs), self.assertRaises(error):
+                    post_to_instagram(**kwargs)
+            settings.instagram_username = None
+            with self.assertRaises(InstagramError):
+                post_to_instagram([str(self.image)], dry_run=True)
+        for untouched in patched.values():
+            untouched.assert_not_called()
+
+    def test_token_saved_for_another_account_is_refused(self) -> None:
+        """The token decides where a post lands, so one saved for another account stops the call before any request."""
+        from exporters.instagram import InstagramError, post_to_instagram
+
+        self._write_token(username="someoneelse")
+        with mock.patch("exporters.instagram.open_https") as request, self.assertRaises(InstagramError):
+            post_to_instagram([str(self.image)], dry_run=True)
+        request.assert_not_called()
+
+    def test_dry_run_converts_and_reports_without_uploading(self) -> None:
+        """dry_run shows the account and the JPEG's size (scaled to 1440 wide) but uploads and posts nothing."""
+        from exporters.instagram import post_to_instagram
+
+        with self._offline() as patched:
+            preview = post_to_instagram([str(self.image)], caption="  New episode  ", dry_run=True)
+        for untouched in patched.values():
+            untouched.assert_not_called()
+        self.assertEqual(
+            (preview["status"], preview["username"], preview["width"], preview["height"], preview["caption_chars"]),
+            ("dry_run", "testshow", 1440, 810, 11),
+        )
+
+    def test_post_stages_jpeg_publishes_container_and_logs(self) -> None:
+        """The JPEG goes to R2 under a hash key, Meta gets its URL, the container is published, and the post logged."""
+        from exporters.instagram import post_to_instagram
+
+        request = self._replies(
+            {"id": "c-1"},
+            {"status_code": "FINISHED"},
+            {"id": "m-9"},
+            {"permalink": "https://www.instagram.com/p/abc/"},
+        )
+        r2 = self._r2()
+        with self._offline(request, r2):
+            result = post_to_instagram([str(self.image)], caption="New episode #ai", episode_slug="ep-one")
+
+        key = r2.return_value.upload_file.call_args.args[1]
+        self.assertRegex(key, r"^instagram/[0-9a-f]{24}\.jpg$")
+        self.assertEqual(r2.return_value.upload_file.call_args.kwargs["content_type"], "image/jpeg")
+        create, status, publish, permalink = request.call_args_list
+        url, headers, data = create.args
+        self.assertEqual(url, "https://graph.facebook.com/v26.0/17841/media")
+        self.assertEqual(headers["Authorization"], f"Bearer {self.TOKEN}")
+        self.assertEqual(
+            json.loads(data), {"image_url": f"https://audio.example.com/{key}", "caption": "New episode #ai"}
+        )
+        self.assertTrue(status.args[0].endswith("/c-1?fields=status_code,status"))
+        self.assertEqual(json.loads(publish.args[2]), {"creation_id": "c-1"})
+        # The token travels only in the Authorization header, never in a URL.
+        self.assertTrue(all(self.TOKEN not in call.args[0] for call in request.call_args_list))
+        self.assertEqual((result["status"], result["url"]), ("posted", "https://www.instagram.com/p/abc/"))
+        logged = json.loads(settings.instagram_post_log_path.read_text())
+        self.assertEqual((logged["media_id"], logged["episode_slug"]), ("m-9", "ep-one"))
+        self.assertNotIn(self.TOKEN, settings.instagram_post_log_path.read_text())
+
+    def test_same_image_and_caption_is_never_posted_twice(self) -> None:
+        """A logged post of the same image and caption is returned without uploading or contacting Instagram."""
+        from exporters.instagram import post_to_instagram
+
+        published = ({"id": "c-1"}, {"status_code": "FINISHED"}, {"id": "m-9"}, {"permalink": "https://i/p/1"})
+        with self._offline(self._replies(*published), self._r2()):
+            post_to_instagram([str(self.image)], caption="Same")
+        with self._offline() as patched:
+            repeat = post_to_instagram([str(self.image)], caption="Same")
+        for untouched in patched.values():
+            untouched.assert_not_called()
+        self.assertEqual((repeat["status"], repeat["media_id"]), ("exists", "m-9"))
+
+    def test_failed_processing_publishes_nothing(self) -> None:
+        """A container Meta can't process is reported, and media_publish is never called."""
+        from exporters.instagram import InstagramError, post_to_instagram
+
+        request = self._replies({"id": "c-1"}, {"status_code": "ERROR", "status": "image could not be fetched"})
+        with self._offline(request, self._r2()), self.assertRaises(InstagramError) as caught:
+            post_to_instagram([str(self.image)])
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("nothing was published", str(caught.exception))
+        self.assertFalse(settings.instagram_post_log_path.exists())
+
+    def test_rejection_reports_meta_message_without_the_token(self) -> None:
+        """Meta's explanation reaches the agent, an invalid token says how to fix it, and the token never appears."""
+        import urllib.error
+
+        from exporters.instagram import InstagramError, post_to_instagram
+
+        body = json.dumps({"error": {"message": "Error validating access token", "code": 190}}).encode()
+        rejection = urllib.error.HTTPError("https://graph.facebook.com/x", 400, "Bad Request", None, io.BytesIO(body))
+        request = mock.MagicMock(side_effect=rejection)
+        with self._offline(request, self._r2()), self.assertRaises(InstagramError) as caught:
+            post_to_instagram([str(self.image)])
+        message = str(caught.exception)
+        self.assertIn("Error validating access token", message)
+        self.assertIn("exporters.instagram login", message)
+        self.assertNotIn(self.TOKEN, message)
+
+    def _login(
+        self,
+        pasted: str,
+        shared: list[dict[str, str]] | None = None,
+        linked: dict[str, str] | None = None,
+        pages: list[dict[str, Any]] | None = None,
+    ) -> tuple[int, mock.MagicMock, str]:
+        """Run `login` with a pasted token; return exit code, request mock, and stderr.
+
+        `shared` is the account list a Unified login token gets (None: that lookup fails, as for other
+        tokens); `linked` is the Instagram account linked to a Page token's Page; `pages` is what a user
+        token's /me/accounts returns (None: that lookup fails, as for other tokens).
+        """
+        import urllib.error
+
+        from exporters.instagram import login
+
+        settings.instagram_token_path.unlink(missing_ok=True)
+        unsupported = urllib.error.HTTPError(
+            "https://graph.facebook.com/x", 400, "Bad Request", None,
+            io.BytesIO(b'{"error": {"message": "Tried accessing nonexisting field", "code": 100}}'),
+        )
+        replies: list[Any] = [
+            io.BytesIO(b'{"id": "me-1"}'),
+            unsupported if shared is None else io.BytesIO(json.dumps({"data": shared}).encode()),
+            io.BytesIO(json.dumps({"instagram_business_account": linked} if linked else {"id": "me-1"}).encode()),
+            unsupported if pages is None else io.BytesIO(json.dumps({"data": pages}).encode()),
+        ]
+        request = mock.MagicMock(side_effect=replies)
+        with (
+            mock.patch("exporters.instagram.getpass", return_value=pasted),
+            mock.patch("exporters.instagram.open_https", request),
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            return login(), request, stderr.getvalue()
+
+    def test_login_saves_the_configured_account_privately(self) -> None:
+        """Paste noise is stripped, the shared accounts are listed, and INSTAGRAM_USERNAME's account is saved 0600."""
+        shared = [{"id": "1", "username": "other"}, {"id": "17841", "username": "TestShow"}]
+        code, request, _ = self._login("\x1b[200~EAA abc\r\ndef\x1b[201~\n", shared)
+
+        self.assertEqual(code, 0)
+        url, headers, _data = request.call_args_list[1].args
+        self.assertEqual(url, "https://graph.facebook.com/v26.0/me/assigned_instagram_accounts?fields=id,username")
+        self.assertEqual(headers["Authorization"], "Bearer EAAabcdef")
+        saved = json.loads(settings.instagram_token_path.read_text())
+        stored = [saved[key] for key in ("access_token", "user_id", "username")]
+        self.assertEqual(stored, ["EAAabcdef", "17841", "TestShow"])
+        self.assertEqual(settings.instagram_token_path.stat().st_mode & 0o777, 0o600)
+
+    def test_login_finds_the_account_linked_to_a_page_token(self) -> None:
+        """A Page token's account list lookup fails, but the Page's linked Instagram account is found and saved."""
+        code, request, _ = self._login("EAA-page", linked={"id": "17841", "username": "testshow"})
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            request.call_args_list[2].args[0],
+            "https://graph.facebook.com/v26.0/me?fields=instagram_business_account%7Bid%2Cusername%7D",
+        )
+        saved = json.loads(settings.instagram_token_path.read_text())
+        self.assertEqual([saved[k] for k in ("user_id", "username", "access_token")], ["17841", "testshow", "EAA-page"])
+
+    def test_login_swaps_a_user_token_for_the_page_token(self) -> None:
+        """A user token is never stored: the token saved is the Page token of the Page linked to the account."""
+        account = {"id": "17841", "username": "testshow"}
+        pages = [
+            {"id": "p-1", "access_token": "EAA-other-page"},
+            {"id": "p-2", "access_token": "EAA-show-page", "instagram_business_account": account},
+        ]
+        code, request, _ = self._login("EAA-user", pages=pages)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            request.call_args_list[3].args[0],
+            "https://graph.facebook.com/v26.0/me/accounts"
+            "?fields=access_token,instagram_business_account%7Bid%2Cusername%7D",
+        )
+        saved_text = settings.instagram_token_path.read_text()
+        self.assertEqual(json.loads(saved_text)["access_token"], "EAA-show-page")
+        self.assertNotIn("EAA-user", saved_text)
+
+    def test_login_never_guesses_the_account(self) -> None:
+        """No match for INSTAGRAM_USERNAME, no reachable account, or several with none configured: nothing is saved."""
+        two = [{"id": "1", "username": "a"}, {"id": "2", "username": "b"}]
+        cases = [("testshow", two), ("testshow", []), (None, two), ("testshow", [{"id": "17841"}]), ("testshow", None)]
+        for username, shared in cases:
+            with self.subTest(username=username, shared=shared):
+                settings.instagram_username = username
+                code, _, stderr = self._login("EAA-token", shared)
+                self.assertEqual(code, 1)
+                self.assertIn("Nothing was saved", stderr)
+                self.assertFalse(settings.instagram_token_path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

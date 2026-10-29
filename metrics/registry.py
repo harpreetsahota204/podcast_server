@@ -17,6 +17,8 @@ BUILTIN_COLLECTORS: dict[str, str] = {
     "cloudflare": "metrics.collectors.cloudflare:CloudflareCollector",
     "x": "metrics.collectors.x:XCollector",
     "youtube": "metrics.collectors.youtube:YouTubeCollector",
+    "devto": "metrics.collectors.devto:DevtoCollector",
+    "substack": "metrics.collectors.substack:SubstackCollector",
 }
 
 

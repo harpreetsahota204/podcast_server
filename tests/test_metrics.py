@@ -393,6 +393,89 @@ class XTests(TempDirTestCase):
             self.assertIsInstance(XCollector().transport(), BearerTransport)
 
 
+class CrosspostCollectorTests(TempDirTestCase):
+    """dev.to and Substack metrics cover only logged cross-posts, published ones, credited to episodes by slug."""
+
+    def setUp(self) -> None:
+        """Point the cross-post logs into the temp dir."""
+        super().setUp()
+        self._saved_data_dir = settings.data_dir
+        settings.data_dir = self.tmp
+
+    def tearDown(self) -> None:
+        """Restore the data dir."""
+        settings.data_dir = self._saved_data_dir
+        super().tearDown()
+
+    @staticmethod
+    def write_log(path: Path, *records: dict[str, Any]) -> None:
+        """Write log lines the way the cross-post tools do."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(r) + "\n" for r in records))
+
+    def test_devto_reads_logged_published_articles_only(self) -> None:
+        """Unlogged articles and drafts are skipped; an episode-slug article is credited to that episode."""
+        from metrics.collectors.devto import DevtoCollector
+
+        self.write_log(settings.devto_post_log_path, {"slug": "ep-a", "article_id": 1}, {"slug": "other", "article_id": 2},
+                       {"slug": "draft", "article_id": 3})
+        articles = [
+            {"id": 1, "published": True, "title": "A", "url": "https://dev.to/x/a", "published_at": "2026-03-09T00:00:00Z",
+             "page_views_count": 40, "public_reactions_count": 2, "comments_count": 1},
+            {"id": 2, "published": True, "title": "B", "url": "https://dev.to/x/b", "page_views_count": 7},
+            {"id": 3, "published": False, "title": "Draft", "page_views_count": 0},
+            {"id": 9, "published": True, "title": "Not ours", "page_views_count": 999},
+        ]
+        with mock.patch("metrics.collectors.devto.my_articles", return_value=articles):
+            result = DevtoCollector().collect(make_ctx())
+        self.assertEqual({e.entity_id: e.episode_slug for e in result.entities}, {"1": "ep-a", "2": None})
+        views = {o.entity_id: o.value for o in result.observations if o.metric == "views"}
+        self.assertEqual(views, {"1": 40, "2": 7})
+        self.assertTrue(all(o.granularity == "snapshot" for o in result.observations))
+        self.assertEqual(result.notes, ["2 of 3 logged articles are published and were read"])
+
+    def test_substack_matches_by_id_or_slug_and_reads_stats(self) -> None:
+        """Published logged posts are matched by id (or the engine-set slug); others are ignored."""
+        from metrics.collectors.substack import SubstackCollector
+
+        self.write_log(settings.substack_post_log_path, {"slug": "ep-a", "draft_id": 11}, {"slug": "by-slug", "draft_id": 12})
+        posts = [
+            {"id": 11, "slug": "ep-a", "title": "A", "canonical_url": "https://s.example/p/ep-a", "post_date": "2026-03-09",
+             "stats": {"views": 120, "opened": 80, "clicks": 5}, "reaction_count": 3, "comment_count": 0},
+            {"id": 99, "slug": "by-slug", "title": "B", "stats": {"views": 10}},
+            {"id": 50, "slug": "older-post", "title": "Not ours", "stats": {"views": 10000}},
+        ]
+        with mock.patch("metrics.collectors.substack.published_posts", return_value=posts):
+            result = SubstackCollector().collect(make_ctx())
+        self.assertEqual({e.entity_id: e.episode_slug for e in result.entities}, {"11": "ep-a", "99": None})
+        first = {o.metric: o.value for o in result.observations if o.entity_id == "11"}
+        self.assertEqual(first, {"views": 120, "opens": 80, "clicks": 5, "reactions": 3, "comments": 0})
+
+    def test_substack_without_logged_posts_never_signs_in(self) -> None:
+        """No cross-posts means no call to Substack's private API at all."""
+        from metrics.collectors.substack import SubstackCollector
+
+        with mock.patch("metrics.collectors.substack.published_posts") as listing:
+            result = SubstackCollector().collect(make_ctx())
+        listing.assert_not_called()
+        self.assertEqual(result.entities, [])
+
+    def test_source_failures_become_collector_errors(self) -> None:
+        """A dev.to or Substack failure fails only that source, with the platform's message."""
+        from exporters.devto import DevtoError
+        from exporters.substack_post import SubstackError
+        from metrics.collectors.devto import DevtoCollector
+        from metrics.collectors.substack import SubstackCollector
+
+        self.write_log(settings.substack_post_log_path, {"slug": "ep-a", "draft_id": 11})
+        with mock.patch("metrics.collectors.devto.my_articles", side_effect=DevtoError("dev.to HTTP 401")), \
+                self.assertRaisesRegex(CollectorError, "401"):
+            DevtoCollector().collect(make_ctx())
+        with mock.patch("metrics.collectors.substack.published_posts", side_effect=SubstackError("sign-in failed")), \
+                self.assertRaisesRegex(CollectorError, "sign-in failed"):
+            SubstackCollector().collect(make_ctx())
+
+
 class FetchJsonTests(unittest.TestCase):
     """Errors must be useful without exposing credentials."""
 

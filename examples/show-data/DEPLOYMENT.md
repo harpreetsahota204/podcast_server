@@ -38,7 +38,10 @@ Last verified: <YYYY-MM-DD>
 | `EPISODE_GUID_PREFIX` | <prefix> |
 | `WEBSITE_*` overrides | <any non-default site paths or branch> |
 | `HF_BACKUP_REPO` | <user/dataset, or none> |
-| Metrics sources | <op3 / cloudflare / x / extra collectors>; `CLOUDFLARE_ZONE_ID` <zone>, `OP3_SHOW_UUID` <uuid> |
+| `BLOG_URL_TEMPLATE` | <https://example.com/blog/{slug}/, or none> |
+| `SUBSTACK_PUBLICATION_URL` | <https://name.substack.com, or none> |
+| `INSTAGRAM_USERNAME` | <handle without @, or none> |
+| Metrics sources | <op3 / cloudflare / x / youtube / devto / substack / extra collectors>; `CLOUDFLARE_ZONE_ID` <zone>, `OP3_SHOW_UUID` <uuid> |
 
 ## Metrics
 
@@ -54,9 +57,21 @@ Last verified: <YYYY-MM-DD>
 - Art prompt style (`THUMBNAIL_STYLE`): <value>
 - Change log: `social/youtube_thumbnails.jsonl` (pinned on the metrics dashboard)
 
+## Instagram
+
+- Account: <handle> (<Business or Creator>); Meta app: <app name and id>
+- Posts logged to `social/instagram_posts.jsonl`; staged images in the bucket under `instagram/`
+- Login: <Page token for Page <name> / Unified login configuration <name>>; token expiry <never / date>; token saved <date> (re-run `python -m exporters.instagram login` with a new token if it expires)
+
+## Blog Cross-Posting
+
+- dev.to account: <username>; drafts logged to `social/devto_posts.jsonl`
+- Substack publication: <URL>; drafts logged to `social/substack_posts.jsonl`; session cookie saved <date> (re-run `python -m exporters.substack_post login` when it expires)
+- Default dev.to tags / Substack email policy: <see PLAYBOOK §7>
+
 ## Audio Hosting (Cloudflare R2)
 
-- Bucket: <name>; episodes at `episodes/<slug>.mp3`; media at `media/`
+- Bucket: <name>; episodes at `episodes/<slug>.mp3`; media at `media/`; Instagram staging at `instagram/`
 - Custom domain: <audio.example.com> (connected <date>)
 - `r2.dev` public URL: <disabled / still enabled because ...>
 - Reminder: published objects are cached as immutable; never overwrite a key.
@@ -105,6 +120,9 @@ How to restore: <short steps>
 | OP3 API token | `.env` | <read-only API key> |
 | Cloudflare analytics token | `.env` | <Analytics Read in a policy scoped to one zone/domain> |
 | X (posting + metrics) | <xurl auth file> | <app name; scopes> |
+| dev.to API key | `.env` (`DEVTO_API_KEY`) | <cross-posting drafts + metrics> |
+| Instagram access token | `INSTAGRAM_TOKEN_PATH` (mode 600) | <Page or system-user token; whole-account posting; written by `login`> |
+| Substack session cookie | `SUBSTACK_COOKIES_PATH` (mode 600) | <whole-account access; expires; written by `login`> |
 | Agent(s) operating the show | <agent name, where its MCP config and briefing live> | |
 
 ## Timeline

@@ -2,6 +2,10 @@
 # catalog.db and audio are covered by scripts/backup_to_hf.py.
 catalog.db
 catalog.db-*
+# Collected metrics and the dashboard rebuild from the sources at any time.
+metrics.db
+metrics.db-*
+metrics/
 *.bak*
 backup/
 raw/

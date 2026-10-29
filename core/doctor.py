@@ -16,9 +16,11 @@ from collections.abc import Callable
 from urllib.parse import urlparse
 
 from core.config import settings
+from core.credentials import readable_by_others
 from core.net import open_https
 from core.storage import R2StorageClient
 from exporters.devto import DevtoError, devto_username
+from exporters.instagram import InstagramError, verify_account
 from exporters.substack_post import SubstackError, substack_publication
 from exporters.x_post import XPostError, xurl_command
 
@@ -127,6 +129,22 @@ def check_x_posting() -> Check:
     return "PASS", f"posting as @{settings.x_username} via {command[0]}; verify the login with `xurl whoami`"
 
 
+def check_instagram() -> Check:
+    """Instagram posting is off, or the saved token is private, belongs to INSTAGRAM_USERNAME, and still works."""
+    if not settings.instagram_username:
+        return "PASS", "off (set INSTAGRAM_USERNAME and run `python -m exporters.instagram login`)"
+    token_file = settings.instagram_token_path.expanduser()
+    # The token controls the whole Instagram account, so a file others can read is a failure, not a warning.
+    if readable_by_others(token_file):
+        return "FAIL", f"{token_file} is readable by other users; run `chmod 600 {token_file}`."
+    try:
+        account = verify_account()
+    except InstagramError as e:
+        return "WARN", str(e)
+    saved = account["saved_at"][:10]
+    return "PASS", f"posting as @{account['username']} (token saved {saved})"
+
+
 def check_devto() -> Check:
     """dev.to cross-posting is off, or the API key works and drafts get a canonical URL."""
     if not settings.devto_api_key:
@@ -148,7 +166,7 @@ def check_substack() -> Check:
         return "WARN", "SUBSTACK_PUBLICATION_URL is set but BLOG_URL_TEMPLATE isn't; cross-posting refuses without it."
     cookies = settings.substack_cookies_path.expanduser()
     # The cookie controls the whole Substack account, so a file others can read is a failure, not a warning.
-    if cookies.is_file() and cookies.stat().st_mode & 0o077:
+    if readable_by_others(cookies):
         return "FAIL", f"{cookies} is readable by other users; run `chmod 600 {cookies}`."
     try:
         publication = substack_publication()
@@ -184,6 +202,7 @@ CHECKS: list[tuple[str, Callable[[], Check]]] = [
     ("Feed URL", check_feed_url),
     ("Optional integrations", check_optional),
     ("X posting", check_x_posting),
+    ("Instagram posting", check_instagram),
     ("dev.to cross-posting", check_devto),
     ("Substack cross-posting", check_substack),
     ("Metrics sources", check_metrics_sources),
