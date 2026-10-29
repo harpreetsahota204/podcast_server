@@ -16,7 +16,7 @@ echo "DATA_DIR=$HOME/my-show-data" >> /path/to/podcast_server/.env
 | `excluded_episodes.json` | Slugs/GUIDs that must never be (re)published. Delete the example entry. |
 | `transcripts/` | `<slug>.txt` transcripts |
 | `catalog.db` | Created on first run. Don't commit it; back it up with `scripts/backup_to_hf.py`. |
-| `social/` | Written by the engine: append-only logs of every public action and draft (`x_posts.jsonl`, `instagram_posts.jsonl`, `youtube_uploads.jsonl`, `youtube_thumbnails.jsonl`, `devto_posts.jsonl`, `substack_posts.jsonl`). Agents read them before retrying a failed call; the metrics collectors read them to know which posts are the show's. Keep them (commit or back up). |
+| `social/` | Written by the engine: append-only logs of every public action and draft (`x_posts.jsonl`, `instagram_posts.jsonl`, the `*_deletions.jsonl` and `devto_unpublished.jsonl` removal logs, `youtube_uploads.jsonl`, `youtube_thumbnails.jsonl`, `devto_posts.jsonl`, `substack_posts.jsonl`). Agents read them before retrying a failed call; the metrics collectors read them to know which posts are the show's. Keep them (commit or back up). |
 | `youtube_videos.json` | Optional: videos uploaded outside the engine, mapped to episodes, so YouTube metrics cover them |
 | `thumbnails/` | Staged thumbnail art and rendered thumbnails |
 | `metrics.db`, `metrics/dashboard.html` | Collected audience metrics and the offline dashboard. Disposable: re-collect any time. |

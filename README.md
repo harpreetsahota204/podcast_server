@@ -172,10 +172,10 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 
 | Level | What your client can do | Tools |
 | :--- | :--- | :--- |
-| Read-only | run without asking | `podcast_status`, `podcast_inspect`, `podcast_list_episodes`, `podcast_get_episode`, `podcast_draft_social`, `podcast_metrics_summary`, `podcast_episode_metrics` |
+| Read-only | run without asking | `podcast_status`, `podcast_inspect`, `podcast_list_episodes`, `podcast_get_episode`, `podcast_draft_social`, `podcast_metrics_summary`, `podcast_episode_metrics`, and the `podcast_list_*` tools (Instagram, YouTube, dev.to, Substack) |
 | Local files | run without asking | `podcast_stage_thumbnail`, `podcast_render_thumbnail`, `podcast_metrics_report`, `podcast_create_blog` |
 | Outside services, additive | run, safe to retry | `podcast_stage_from_descript`, `podcast_rebuild_feed`, `podcast_upload_media_asset`, `podcast_crosspost_to_devto` and `podcast_crosspost_to_substack` (unpublished drafts only), `podcast_metrics_collect`, `podcast_backup` |
-| Public edit | ask you first; safe to retry | `podcast_update_episode`, `podcast_deploy_site`, `podcast_set_youtube_thumbnail` |
+| Public edit | ask you first; safe to retry | `podcast_update_episode`, `podcast_deploy_site`, `podcast_set_youtube_thumbnail`, `podcast_unpublish_devto_article`, and (permanent) `podcast_delete_instagram_post`, `podcast_delete_youtube_video`, `podcast_delete_substack_post` |
 | Public release | ask you first; never repeat blindly | `podcast_publish`, `podcast_publish_to_youtube`, `podcast_post_to_x`, `podcast_post_to_instagram` |
 
 ### Design principles
@@ -196,6 +196,8 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 - **Agent surface:** MCP tools covering staging (including Descript), publishing, episode edits, deploys, backups, blog posts, social drafts, X and Instagram posts, media uploads, YouTube uploads and thumbnails, and audience metrics. Each tool carries MCP safety annotations (read-only, destructive, idempotent), and the server sends its operating rules to every client on connect.
 - **Blog cross-posting:** your site keeps the original; the companion blog post goes to dev.to and Substack as unpublished drafts, with site-relative links made absolute. dev.to drafts carry a canonical URL back to your site; Substack has no canonical setting, so its drafts open with an "Originally published at" link. You publish each one on its platform.
 - **Instagram posts:** approved images go to your Instagram professional account as feed posts, converted to JPEG and staged on your R2 domain for Meta to fetch. A one-time login saves a never-expiring Page token in its own 0600 file. Carousels, Stories, and Reels are planned.
+- **Content management:** agents can list what's on Instagram, YouTube, dev.to, and Substack and remove one item you named at a time: delete an Instagram post, YouTube video, or Substack post or draft (permanent), or unpublish a dev.to article back to draft (dev.to's API can't delete). Each removal checks the item is yours first, has a dry run, and is logged with what was removed.
+- **YouTube Shorts:** uploads that are square or vertical and up to 3 minutes become Shorts; with `expect_short`, the engine measures the clip first (ffprobe, rotation-aware) and refuses one that would land as a regular video.
 - **YouTube thumbnails:** your agent renders the art; the engine sets the headline in your show's fonts and colors (auto-fitted, clear of the duration badge, under 2 MB) and pushes it to YouTube after approval.
 - **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X and YouTube engagement for the show's own posts and videos, dev.to and Substack reach for the blog posts the engine cross-posted, or your own) feed a local SQLite store, an offline HTML dashboard, and MCP tools agents can query.
 - **Safety:** see the list below; checks run before any upload.
@@ -227,7 +229,7 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 | Instagram professional account (Business or Creator) + a Meta app | `podcast_post_to_instagram`: image posts to the show's Instagram | A [Meta developer](https://developers.facebook.com) app; a never-expiring Page token for the Facebook Page linked to the account (or a Unified login token); your own account needs no App Review. Saved by `python -m exporters.instagram login`. Steps in ADOPTING. |
 | [dev.to](https://dev.to) API key | `podcast_crosspost_to_devto`: companion blog posts as dev.to drafts | Generate a key under dev.to → Settings → Extensions; needs a website (`SITE_MODE=astro`) for the canonical URL. Steps in ADOPTING. |
 | A [Substack](https://substack.com) publication | `podcast_crosspost_to_substack`: companion blog posts as Substack drafts | Substack has no official publishing API: this uses the community [python-substack](https://github.com/ma2za/python-substack) library and your browser session cookie, which controls the whole account and expires. Steps in ADOPTING. For episodes, Substack's own *Distribute to Substack* reads your feed, no engine changes needed. |
-| YouTube Data + Analytics APIs | `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, and YouTube metrics for the show's videos | A Google Cloud OAuth client ([Data API](https://developers.google.com/youtube/v3), [Analytics API](https://developers.google.com/youtube/analytics)). Custom thumbnails need a phone-verified channel. |
+| YouTube Data + Analytics APIs | `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, `podcast_list_youtube_videos` / `podcast_delete_youtube_video` (deleting needs the `youtube.force-ssl` scope), and YouTube metrics for the show's videos; ffmpeg's `ffprobe` for the optional Shorts check | A Google Cloud OAuth client ([Data API](https://developers.google.com/youtube/v3), [Analytics API](https://developers.google.com/youtube/analytics)). Custom thumbnails need a phone-verified channel. |
 | An image model your agent can call | Thumbnail art (the engine only sets the text) | Whatever your agent supports (e.g. via its own MCP or API tools); put fonts and colors in `DATA_DIR/templates/thumbnail_style.json`. |
 | [OP3](https://op3.dev) | Free, open download analytics (stats are public) | `USE_OP3_PREFIX=true` and a free API key. |
 | Cloudflare analytics token | Audio-traffic metrics from the edge | A token with Analytics Read on the zone (newer dashboards: a policy scoped to the *Domain*). |
@@ -258,7 +260,7 @@ Every setting is documented inline in [`.env.example`](./.env.example).
 | Storage (required) | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_DOMAIN`, optional `USE_OP3_PREFIX` |
 | Website | `SITE_MODE` (`none`/`astro`), `WEBSITE_PATH`, `WEBSITE_RSS_FILE`, `WEBSITE_EPISODES_DIR`, `WEBSITE_BLOG_DIR`, `WEBSITE_BRANCH`, `FEED_OBJECT_KEY` |
 | Show data | `DATA_DIR` (catalog, transcripts, templates, playbook, backups) |
-| Integrations (optional) | `DESCRIPT_API_BEARER`, `YOUTUBE_TOKEN_PATH`, `HF_BACKUP_REPO`, `THUMBNAIL_STYLE`, `DEFAULT_TAGS`, `PODCAST_GUID` |
+| Integrations (optional) | `DESCRIPT_API_BEARER`, `YOUTUBE_TOKEN_PATH`, `FFPROBE_PATH` (Shorts check), `HF_BACKUP_REPO`, `THUMBNAIL_STYLE`, `DEFAULT_TAGS`, `PODCAST_GUID` |
 | X posting (optional) | `X_USERNAME`, `XURL_APP`, `XURL_PATH` (tokens stay in xurl's own auth file) |
 | Instagram posting (optional) | `INSTAGRAM_USERNAME`, `INSTAGRAM_TOKEN_PATH` (token file written by `python -m exporters.instagram login`) |
 | Blog cross-posting (optional) | `BLOG_URL_TEMPLATE` (your blog post URL with `{slug}`), `DEVTO_API_KEY`, `SUBSTACK_PUBLICATION_URL`, `SUBSTACK_COOKIES_PATH` (cookie file written by `python -m exporters.substack_post login`) |
@@ -275,7 +277,7 @@ my-show-data/
 ├── PLAYBOOK.md               # your editorial voice, title rules, workflows (agents read this first)
 ├── DEPLOYMENT.md             # your infrastructure record: DNS, R2, website, backups, credential locations
 ├── templates/                # social_long.txt, social_short.txt, thumbnail_style.json, fonts/
-├── social/                   # logs: x_posts.jsonl, instagram_posts.jsonl, devto_posts.jsonl, substack_posts.jsonl, youtube_uploads.jsonl, youtube_thumbnails.jsonl
+├── social/                   # logs of public actions and removals (*_deletions.jsonl, devto_unpublished.jsonl): x_posts.jsonl, instagram_posts.jsonl, devto_posts.jsonl, substack_posts.jsonl, youtube_uploads.jsonl, youtube_thumbnails.jsonl
 ├── youtube_videos.json       # optional: back-catalog videos → episodes, for YouTube metrics
 ├── thumbnails/               # staged art and rendered thumbnails
 ├── excluded_episodes.json    # episodes that must never be (re)published
@@ -307,6 +309,7 @@ Agents should read [`AGENTS.md`](./AGENTS.md) and then your `PLAYBOOK.md`.
 | Publishing | `podcast_stage_from_descript`, `podcast_publish`, `podcast_update_episode`, `podcast_rebuild_feed`, `podcast_deploy_site`, `podcast_backup` |
 | Content | `podcast_create_blog`, `podcast_draft_social`, `podcast_stage_thumbnail`, `podcast_render_thumbnail` |
 | Distribution | `podcast_upload_media_asset`, `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, `podcast_post_to_x`, `podcast_post_to_instagram`, `podcast_crosspost_to_devto`, `podcast_crosspost_to_substack` |
+| Content management | `podcast_list_instagram_posts`, `podcast_delete_instagram_post`, `podcast_list_youtube_videos`, `podcast_delete_youtube_video`, `podcast_list_devto_articles`, `podcast_unpublish_devto_article`, `podcast_list_substack_posts`, `podcast_delete_substack_post` |
 | Metrics | `podcast_metrics_collect`, `podcast_metrics_summary`, `podcast_episode_metrics`, `podcast_metrics_report` |
 
 ## Common Commands
@@ -335,6 +338,7 @@ The engine refuses to:
 - **Upload local files to Substack**: Substack drafts accept only https images, because the library would otherwise upload any image path found on disk.
 - **Attach arbitrary files**: X media, Instagram images, and YouTube thumbnails accept only image/video types within each platform's size and shape limits, checked before any upload.
 - **Post to the wrong Instagram account or twice**: a token saved for another account than `INSTAGRAM_USERNAME` is refused, and the same image with the same caption returns the logged post instead of a second one.
+- **Remove content in bulk or blindly**: the delete and unpublish tools (Instagram, YouTube, dev.to, Substack) take one id per call, read the item first, refuse anything that isn't your account's own, and log what they removed. There is no delete-all tool.
 - **Lose track of public actions**: every X and Instagram post, YouTube upload, and thumbnail change is logged as soon as it succeeds, so an agent can check before retrying instead of posting twice.
 
 ## Troubleshooting

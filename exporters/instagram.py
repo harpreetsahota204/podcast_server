@@ -34,7 +34,7 @@ from datetime import UTC, datetime
 from getpass import getpass
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from PIL import Image
 
@@ -64,6 +64,14 @@ CONTAINER_POLL_SECONDS = 3
 CONTAINER_TIMEOUT_SECONDS = 300
 # Meta error code for an expired, revoked, or otherwise invalid access token.
 INVALID_TOKEN_CODE = 190
+# Meta's delete endpoint answers this "Generic Internal Error" intermittently; nothing was deleted when it does.
+TRANSIENT_DELETE_SUBCODE = 2207085
+# Listing: Meta pages at most 100 posts per request; captions are trimmed so a page stays readable.
+MAX_LIST_LIMIT = 100
+CAPTION_PREVIEW_CHARS = 120
+POST_FIELDS = "id,media_type,media_product_type,timestamp,permalink,caption,username"
+# Instagram media ids are numeric; anything else could address a different Graph object.
+_MEDIA_ID_RE = re.compile(r"\d+")
 # Meta's error text is returned to the agent; cap it so a long dump stays readable.
 MAX_ERROR_CHARS = 300
 LOGIN_COMMAND = "uv run python -m exporters.instagram login"
@@ -86,20 +94,26 @@ class InstagramError(RuntimeError):
 def _describe_rejection(exc: urllib.error.HTTPError) -> str:
     """Meta's own explanation of a rejected request, plus the fix when the token is the problem."""
     body = exc.read().decode("utf-8", errors="replace")
-    # Meta answers {"error": {"message", "code", ...}}; fall back to the raw body if it doesn't.
+    # Meta answers {"error": {"message", "code", ...}}, with the useful text in error_user_msg when "message" is
+    # just "Fatal"; fall back to the raw body if it doesn't.
     try:
         error = json.loads(body)["error"]
-        message, code = error["message"], error.get("code")
+        message = error.get("error_user_msg") or error["message"]
+        code, subcode = error.get("code"), error.get("error_subcode")
     except (ValueError, KeyError, TypeError):
-        message, code = body.strip(), None
+        message, code, subcode = body.strip(), None, None
     detail = f"Instagram HTTP {exc.code}: {message}"[:MAX_ERROR_CHARS]
     if code == INVALID_TOKEN_CODE:
         return f"{detail} The token is invalid, expired, or revoked: generate a new one and run `{LOGIN_COMMAND}`."
+    if subcode == TRANSIENT_DELETE_SUBCODE:
+        return f"{detail} Meta's delete endpoint fails this way at times; nothing was deleted, so retrying is safe."
     return detail
 
 
-def _call(path: str, access_token: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    """GET (or POST `payload` as JSON to) a Graph API path and decode the reply.
+def _call(
+    path: str, access_token: str, payload: dict[str, Any] | None = None, method: str | None = None
+) -> dict[str, Any]:
+    """GET (or POST `payload` as JSON to, or send `method` such as DELETE to) a Graph API path and decode the reply.
 
     The token travels only in the Authorization header, and errors never include the
     URL or headers, so it can't leak into a message.
@@ -110,7 +124,7 @@ def _call(path: str, access_token: str, payload: dict[str, Any] | None = None) -
         headers["Content-Type"] = "application/json"
         data = json.dumps(payload).encode("utf-8")
     try:
-        with open_https(f"{GRAPH_URL}/{path}", headers, data) as response:
+        with open_https(f"{GRAPH_URL}/{path}", headers, data, method) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
         raise InstagramError(_describe_rejection(exc)) from None
@@ -266,9 +280,11 @@ def _wait_until_finished(container_id: str, access_token: str) -> None:
 
 
 def _logged_post(source_sha256: str, caption: str) -> dict[str, Any] | None:
-    """The engine's record of an earlier post of this same image with this same caption, if there is one."""
+    """The engine's record of an earlier post of this same image and caption, unless the engine has since deleted it."""
+    deleted = {record.get("media_id") for record in read_records(settings.instagram_deletion_log_path)}
     for record in reversed(read_post_log()):
-        if record.get("media_sha256") == source_sha256 and record.get("caption") == caption:
+        same = record.get("media_sha256") == source_sha256 and record.get("caption") == caption
+        if same and record["media_id"] not in deleted:
             return {"media_id": record["media_id"], "url": record.get("url")}
     return None
 
@@ -351,6 +367,62 @@ def post_to_instagram(
         "media_urls": [image_url],
     }
     if log_error := append_record(settings.instagram_post_log_path, record):
+        result["log_error"] = log_error
+    return result
+
+
+def _post_summary(post: dict[str, Any]) -> dict[str, Any]:
+    """The fields of an Instagram post an agent or human needs to recognize it, with the caption trimmed."""
+    return {
+        "media_id": str(post.get("id", "")),
+        "type": f"{post.get('media_product_type', 'FEED')}/{post.get('media_type', '')}".lower(),
+        "posted_at": post.get("timestamp"),
+        "url": post.get("permalink"),
+        "caption": (post.get("caption") or "")[:CAPTION_PREVIEW_CHARS],
+    }
+
+
+def list_posts(limit: int = 25, after: str | None = None) -> dict[str, Any]:
+    """One page of the account's posts, newest first, and the cursor for the next page (None on the last one)."""
+    token = load_token()
+    query = {"fields": POST_FIELDS, "limit": max(1, min(limit, MAX_LIST_LIMIT)), **({"after": after} if after else {})}
+    page = _call(f"{token['user_id']}/media?{urlencode(query)}", token["access_token"])
+    # Meta includes a `next` link only when another page exists; the cursor alone is enough to ask for it.
+    paging = page.get("paging", {})
+    return {
+        "username": token["username"],
+        "posts": [_post_summary(post) for post in page.get("data", [])],
+        "next_cursor": paging.get("cursors", {}).get("after") if paging.get("next") else None,
+    }
+
+
+def delete_post(media_id: str, dry_run: bool = False) -> dict[str, Any]:
+    """Permanently delete one of the account's posts and log what it was; `dry_run` only shows what would go.
+
+    The post is read first, so a wrong id, or a post from another account, is refused
+    before anything is deleted. Carousels go as a whole; ads can't be deleted.
+    """
+    if not _MEDIA_ID_RE.fullmatch(media_id):
+        raise ValueError(f"{media_id!r} isn't an Instagram media id (digits only).")
+    token = load_token()
+    post = _call(f"{media_id}?fields={POST_FIELDS}", token["access_token"])
+    owner = str(post.get("username") or "")
+    if owner.lower() != token["username"].lower():
+        raise InstagramError(
+            f"Post {media_id} belongs to {f'@{owner}' if owner else 'an unknown account'}, "
+            f"not @{token['username']}; not deleted."
+        )
+    summary = _post_summary(post)
+    if dry_run:
+        return {"status": "dry_run", **summary}
+
+    reply = _call(media_id, token["access_token"], method="DELETE")
+    if not reply.get("success"):
+        raise InstagramError(f"Instagram didn't confirm deleting post {media_id}: {reply}"[:MAX_ERROR_CHARS])
+    result: dict[str, Any] = {"status": "deleted", **summary}
+    # The post is already gone; a log failure is reported, never raised, and the full caption is kept as the record.
+    record = {"deleted_at": datetime.now(UTC).isoformat(), **result, "caption": post.get("caption") or ""}
+    if log_error := append_record(settings.instagram_deletion_log_path, record):
         result["log_error"] = log_error
     return result
 

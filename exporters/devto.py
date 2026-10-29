@@ -6,6 +6,9 @@ pointing at the original (the post on the show's website, unless its frontmatter
 names another), so search engines credit it. Before creating anything, the engine
 looks for an existing draft of the same post (in its own log, then among the
 account's dev.to articles), so a retry after a timeout can't leave a duplicate.
+
+The account's articles can also be listed, and a published one turned back into a draft
+(dev.to's API can't delete; unpublishing is logged to `$DATA_DIR/social/devto_unpublished.jsonl`).
 """
 
 import json
@@ -41,8 +44,8 @@ def _api_key() -> str:
     return settings.devto_api_key
 
 
-def _request(path: str, payload: dict[str, Any] | None = None) -> Any:
-    """Call the dev.to API (GET, or POST with a JSON `payload`) and return the decoded JSON.
+def _request(path: str, payload: dict[str, Any] | None = None, method: str | None = None) -> Any:
+    """Call the dev.to API (GET, POST with a JSON `payload`, or `method` such as PUT) and return the decoded JSON.
 
     The API key is sent only to dev.to and never appears in an error message.
     """
@@ -53,7 +56,7 @@ def _request(path: str, payload: dict[str, Any] | None = None) -> Any:
     }
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     try:
-        with open_https(f"{DEVTO_API}{path}", headers, data) as response:
+        with open_https(f"{DEVTO_API}{path}", headers, data, method) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
         # dev.to explains a rejection (e.g. an unknown tag) in the body; pass that on, not just the status.
@@ -72,6 +75,47 @@ def devto_username() -> str:
 def my_articles() -> list[dict[str, Any]]:
     """The account's own dev.to articles, published and drafts, newest first."""
     return _request(MY_ARTICLES_PATH)
+
+
+def _article_summary(article: dict[str, Any]) -> dict[str, Any]:
+    """The fields of a dev.to article an agent or human needs to recognize it."""
+    return {
+        "article_id": article.get("id"),
+        "title": article.get("title"),
+        "published": bool(article.get("published")),
+        "published_at": article.get("published_at"),
+        "url": article.get("url"),
+        "canonical_url": article.get("canonical_url"),
+    }
+
+
+def list_articles() -> list[dict[str, Any]]:
+    """The account's dev.to articles, published and drafts, newest first."""
+    return [_article_summary(article) for article in my_articles()]
+
+
+def unpublish_article(article_id: int, dry_run: bool = False) -> dict[str, Any]:
+    """Turn one of the account's published articles back into a draft and log it; `dry_run` only shows which.
+
+    dev.to's API has no delete: unpublishing hides the article and keeps it as a draft
+    (deleting it for good is done on dev.to). Refuses articles that aren't the account's own.
+    """
+    article = next((a for a in my_articles() if a.get("id") == article_id), None)
+    if article is None:
+        raise DevtoError(f"Article {article_id} isn't one of this account's dev.to articles; nothing changed.")
+    summary = _article_summary(article)
+    if not summary["published"]:
+        return {"status": "already_unpublished", **summary}
+    if dry_run:
+        return {"status": "dry_run", **summary}
+
+    _request(f"/articles/{article_id}", {"article": {"published": False}}, method="PUT")
+    result: dict[str, Any] = {"status": "unpublished", **summary, "published": False}
+    # The change is already live on dev.to; a log failure is reported, never raised.
+    record = {"unpublished_at": datetime.now(UTC).isoformat(), **result}
+    if log_error := append_record(settings.devto_unpublish_log_path, record):
+        result["log_error"] = log_error
+    return result
 
 
 def create_article(article: dict[str, Any]) -> dict[str, Any]:

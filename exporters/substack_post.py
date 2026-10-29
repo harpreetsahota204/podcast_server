@@ -10,11 +10,15 @@ The engine only creates drafts: the human publishes, and decides whether to emai
 subscribers, in the Substack editor. Substack can't declare a canonical URL, so each
 draft opens with an "Originally published at" line linking to the original.
 
+The publication's posts and drafts can also be listed, and one deleted at a time
+(permanent; logged to `$DATA_DIR/social/substack_deletions.jsonl`).
+
 Save the cookie once (and again whenever it expires):
     uv run python -m exporters.substack_post login
 """
 
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from getpass import getpass
 from pathlib import Path
@@ -35,8 +39,9 @@ MAX_ERROR_CHARS = 300
 REQUEST_TIMEOUT_SECONDS = 60
 # How many of the newest published posts the existing-draft check looks through.
 RECENT_POSTS_CHECKED = 50
-# Page size when listing every published post (for metrics).
-PUBLISHED_PAGE_SIZE = 50
+# Page size when listing published posts (metrics, content management) or drafts; the drafts endpoint
+# answers "400 Invalid value" for pages larger than 25.
+PAGE_SIZE = 25
 # Substack has used both cookie names for the session; sending both covers old and new accounts.
 SESSION_COOKIE_NAMES = ("substack.sid", "connect.sid")
 
@@ -118,9 +123,10 @@ def _posts_in(response: Any) -> list[dict[str, Any]]:
 
 
 def _logged_draft(slug: str) -> dict[str, Any] | None:
-    """The engine's own record of a Substack draft of this post, if it made one."""
+    """The engine's own record of a Substack draft of this post, if it made one and hasn't since deleted it."""
+    deleted = {record.get("post_id") for record in read_records(settings.substack_deletion_log_path)}
     for record in reversed(read_records(settings.substack_post_log_path)):
-        if record.get("slug") == slug and record.get("draft_id"):
+        if record.get("slug") == slug and record.get("draft_id") and record["draft_id"] not in deleted:
             return {"draft_id": record["draft_id"], "edit_url": record["edit_url"]}
     return None
 
@@ -197,18 +203,77 @@ def crosspost_to_substack(slug: str, dry_run: bool = False) -> dict[str, Any]:
     return result
 
 
-def published_posts() -> list[dict[str, Any]]:
-    """Every published post on the publication, newest first, with Substack's per-post `stats` (private API)."""
-    api = _client(_publication_url())
-    posts: list[dict[str, Any]] = []
+def _all_pages(fetch: Callable[[int], Any], what: str) -> list[dict[str, Any]]:
+    """Every item from a paged Substack listing; `fetch(offset)` returns one page of PAGE_SIZE."""
+    items: list[dict[str, Any]] = []
     while True:
         try:
-            page = _posts_in(api.get_published_posts(offset=len(posts), limit=PUBLISHED_PAGE_SIZE))
+            page = _posts_in(fetch(len(items)))
         except Exception as exc:
-            raise SubstackError(f"Couldn't list Substack posts ({_detail(exc)}).") from exc
-        posts += page
-        if len(page) < PUBLISHED_PAGE_SIZE:
-            return posts
+            raise SubstackError(f"Couldn't list Substack {what} ({_detail(exc)}).") from exc
+        items += page
+        if len(page) < PAGE_SIZE:
+            return items
+
+
+def _published(api: Api) -> list[dict[str, Any]]:
+    """Every published post on the publication, newest first, through an already signed-in client."""
+    return _all_pages(lambda offset: api.get_published_posts(offset=offset, limit=PAGE_SIZE), "posts")
+
+
+def published_posts() -> list[dict[str, Any]]:
+    """Every published post on the publication, newest first, with Substack's per-post `stats` (private API)."""
+    return _published(_client(_publication_url()))
+
+
+def _post_summary(post: dict[str, Any], state: str) -> dict[str, Any]:
+    """What an agent or human needs to recognize a Substack post (`state` "published") or draft (`state` "draft")."""
+    post_id = post.get("id")
+    slug = post.get("slug")
+    return {
+        "post_id": post_id,
+        "title": post.get("title") or post.get("draft_title"),
+        "state": state,
+        "date": post.get("post_date") or post.get("draft_updated_at"),
+        "url": f"{_publication_url()}/p/{slug}" if state == "published" and slug else _edit_url(post_id),
+    }
+
+
+def list_posts() -> list[dict[str, Any]]:
+    """The publication's published posts and unpublished drafts (private API), newest first within each."""
+    api = _client(_publication_url())
+    # filter="draft" leaves out published posts, which the drafts endpoint would otherwise list again.
+    drafts = _all_pages(
+        lambda offset: api.get_drafts(filter="draft", offset=offset, limit=PAGE_SIZE), "drafts"
+    )
+    return [_post_summary(p, "published") for p in _published(api)] + [_post_summary(d, "draft") for d in drafts]
+
+
+def delete_post(post_id: int, dry_run: bool = False) -> dict[str, Any]:
+    """Permanently delete one of the publication's posts or drafts and log what it was; `dry_run` only shows which.
+
+    The post is read from the publication first, so an id from anywhere else is refused
+    before anything is deleted. Uses Substack's private API, like the editor's Delete button.
+    """
+    api = _client(_publication_url())
+    try:
+        post = api.get_draft(post_id)
+    except Exception as exc:
+        raise SubstackError(f"No post {post_id} in this publication ({_detail(exc)}); nothing was deleted.") from exc
+    summary = _post_summary(post, "published" if post.get("is_published") else "draft")
+    if dry_run:
+        return {"status": "dry_run", **summary}
+
+    try:
+        api.delete_draft(post_id)
+    except Exception as exc:
+        raise SubstackError(f"Substack refused to delete post {post_id} ({_detail(exc)}).") from exc
+    result: dict[str, Any] = {"status": "deleted", **summary}
+    # The post is already gone; a log failure is reported, never raised.
+    record = {"deleted_at": datetime.now(UTC).isoformat(), **result}
+    if log_error := append_record(settings.substack_deletion_log_path, record):
+        result["log_error"] = log_error
+    return result
 
 
 def save_session_cookie(value: str) -> Path:

@@ -13,13 +13,17 @@ USER_AGENT = "podcast_server/1.0"
 DEFAULT_TIMEOUT_SECONDS = 60
 
 
-def open_https(url: str, extra_headers: dict[str, str] | None = None, data: bytes | None = None) -> HTTPResponse:
+def open_https(
+    url: str, extra_headers: dict[str, str] | None = None, data: bytes | None = None, method: str | None = None
+) -> HTTPResponse:
     """Open an HTTPS URL with the engine's User-Agent and a timeout; reject any other scheme.
 
     Passing `data` sends a POST with that body (e.g. a GraphQL query); otherwise it's a GET.
+    `method` overrides either (e.g. "DELETE").
     """
     if urlparse(url).scheme != "https":
         raise ValueError(f"Only https:// URLs are allowed, got: {url}")
     headers = {"User-Agent": USER_AGENT, **(extra_headers or {})}
-    request = urllib.request.Request(url, data=data, headers=headers)  # noqa: S310 - scheme checked above
+    # The scheme was checked above, so S310 (urlopen accepting file:// and other schemes) doesn't apply.
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)  # noqa: S310
     return urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS)  # noqa: S310

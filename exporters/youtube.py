@@ -4,11 +4,19 @@ Every upload is logged to `$DATA_DIR/social/youtube_uploads.jsonl`. That log, pl
 optional `$DATA_DIR/youtube_videos.json` mapping for videos uploaded some other way,
 defines which videos the YouTube metrics collector measures. Thumbnail changes are
 logged to `$DATA_DIR/social/youtube_thumbnails.jsonl` so the dashboard can mark them.
+The channel's uploads can be listed, and a video deleted one at a time (permanent; logged
+to `$DATA_DIR/social/youtube_deletions.jsonl`).
+
+YouTube has no Shorts upload: it files a square or vertical video of up to 3 minutes as a
+Short by itself. `expect_short` measures the file with ffprobe first and refuses one that
+would land as a regular video.
 """
 
 import json
 import logging
 import re
+import shutil
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -36,6 +44,46 @@ ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly"
 # YouTube's custom-thumbnail formats (the 2 MB size cap lives with the renderer).
 THUMBNAIL_CONTENT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
+# The uploads playlist pages hold at most 50 videos; listing costs 1 quota unit per page, deleting 50.
+MAX_LIST_LIMIT = 50
+# Since October 15, 2024, YouTube files square or vertical uploads of up to 3 minutes as Shorts.
+MAX_SHORT_SECONDS = 180
+FFPROBE_TIMEOUT_SECONDS = 60
+
+
+def measure_video(path: Path) -> dict[str, Any]:
+    """Width, height (as displayed, after any rotation), and duration in seconds of a video file, via ffprobe."""
+    binary = settings.ffprobe_path or (Path(found) if (found := shutil.which("ffprobe")) else None)
+    if binary is None or not binary.is_file():
+        raise FileNotFoundError(f"ffprobe not found at {binary or 'PATH'}; install ffmpeg or set FFPROBE_PATH.")
+    completed = subprocess.run(
+        [
+            str(binary), "-v", "error", "-select_streams", "v:0", "-of", "json",
+            "-show_entries", "stream=width,height:stream_side_data=rotation:stream_tags=rotate:format=duration",
+            str(path),
+        ],
+        capture_output=True, text=True, check=False, timeout=FFPROBE_TIMEOUT_SECONDS,
+    )
+    probe = json.loads(completed.stdout or "{}")
+    if completed.returncode != 0 or not probe.get("streams"):
+        raise ValueError(f"ffprobe couldn't read a video stream from {path.name}: {completed.stderr.strip()[:200]}")
+    stream = probe["streams"][0]
+    width, height = int(stream["width"]), int(stream["height"])
+    # Phones store portrait video as landscape frames plus a rotation flag; a quarter turn swaps what viewers see.
+    rotations = [d.get("rotation") for d in stream.get("side_data_list", [])] + [stream.get("tags", {}).get("rotate")]
+    if any(abs(int(float(r))) % 180 == 90 for r in rotations if r is not None):
+        width, height = height, width
+    return {"width": width, "height": height, "duration_seconds": float(probe.get("format", {}).get("duration", 0))}
+
+
+def short_problem(video: dict[str, Any]) -> str | None:
+    """Why YouTube would file this video as a regular video instead of a Short, or None if it will be a Short."""
+    problems = []
+    if video["width"] > video["height"]:
+        problems.append(f"it's horizontal ({video['width']}x{video['height']})")
+    if video["duration_seconds"] > MAX_SHORT_SECONDS:
+        problems.append(f"it runs {video['duration_seconds']:.0f}s, over {MAX_SHORT_SECONDS}s")
+    return " and ".join(problems) or None
 
 
 def load_credentials() -> Credentials:
@@ -108,6 +156,71 @@ def read_thumbnail_changes() -> list[dict[str, Any]]:
     return [r for r in read_records(settings.youtube_thumbnail_log_path) if r.get("video_id") and r.get("changed_at")]
 
 
+def _own_channel(youtube: Resource) -> dict[str, Any]:
+    """The authenticated channel: its id and the id of its uploads playlist."""
+    return youtube.channels().list(part="id,contentDetails", mine=True).execute()["items"][0]
+
+
+def list_videos(limit: int = 25, page_token: str | None = None) -> dict[str, Any]:
+    """One page of the channel's uploads, newest first, with each video's tracked episode and the next page token."""
+    youtube = get_authenticated_youtube_service()
+    channel = _own_channel(youtube)
+    page = youtube.playlistItems().list(
+        part="snippet,status",
+        playlistId=channel["contentDetails"]["relatedPlaylists"]["uploads"],
+        maxResults=max(1, min(limit, MAX_LIST_LIMIT)),
+        pageToken=page_token,
+    ).execute()
+    tracked = read_tracked_videos()
+    videos = []
+    for item in page.get("items", []):
+        video_id = item["snippet"]["resourceId"]["videoId"]
+        videos.append({
+            "video_id": video_id,
+            "title": item["snippet"].get("title"),
+            "published_at": item["snippet"].get("publishedAt"),
+            "privacy": item.get("status", {}).get("privacyStatus"),
+            "url": f"https://youtu.be/{video_id}",
+            "episode_slug": tracked.get(video_id),
+        })
+    return {"channel_id": channel["id"], "videos": videos, "next_page_token": page.get("nextPageToken")}
+
+
+def delete_video(video_id: str, dry_run: bool = False) -> dict[str, Any]:
+    """Permanently delete one of the channel's videos and log what it was; `dry_run` only shows what would go.
+
+    The video is read first, so a malformed id, a missing video, or another channel's
+    video is refused before anything is deleted. Needs the youtube.force-ssl (or youtube) scope.
+    """
+    if not VIDEO_ID_RE.fullmatch(video_id):
+        raise ValueError(f"{video_id!r} doesn't look like a YouTube video id.")
+    youtube = get_authenticated_youtube_service()
+    found = youtube.videos().list(part="snippet,status", id=video_id).execute().get("items", [])
+    if not found:
+        raise ValueError(f"No video {video_id} is visible to this channel; nothing was deleted.")
+    snippet = found[0]["snippet"]
+    if snippet.get("channelId") != _own_channel(youtube)["id"]:
+        raise ValueError(f"Video {video_id} belongs to another channel ({snippet.get('channelTitle')}); not deleted.")
+    summary = {
+        "video_id": video_id,
+        "title": snippet.get("title"),
+        "published_at": snippet.get("publishedAt"),
+        "privacy": found[0].get("status", {}).get("privacyStatus"),
+        "url": f"https://youtu.be/{video_id}",
+        "episode_slug": read_tracked_videos().get(video_id),
+    }
+    if dry_run:
+        return {"status": "dry_run", **summary}
+
+    youtube.videos().delete(id=video_id).execute()
+    result: dict[str, Any] = {"status": "deleted", **summary}
+    # The video is already gone; a log failure is reported, never raised. The description is kept as the record.
+    record = {"deleted_at": datetime.now(UTC).isoformat(), **result, "description": snippet.get("description", "")}
+    if log_error := append_record(settings.youtube_deletion_log_path, record):
+        result["log_error"] = log_error
+    return result
+
+
 def upload_video_to_youtube(
     video_path: str,
     title: str,
@@ -117,10 +230,12 @@ def upload_video_to_youtube(
     privacy_status: PrivacyStatus = "unlisted",
     notify_subscribers: bool = True,
     episode_slug: str | None = None,
+    expect_short: bool = False,
 ) -> dict[str, Any]:
     """Upload a video with resumable 10 MB chunks and log it; return its id, URL, and final privacy status.
 
-    `episode_slug` credits the video's metrics to that episode.
+    `episode_slug` credits the video's metrics to that episode. `expect_short` measures the
+    file first and refuses it, before anything is uploaded, unless YouTube will file it as a Short.
     """
     file_path = Path(video_path).resolve()
     if not file_path.is_file():
@@ -129,6 +244,14 @@ def upload_video_to_youtube(
     if mimetype is None:
         raise ValueError(f"Unsupported video type {file_path.suffix!r}; allowed: {', '.join(VIDEO_CONTENT_TYPES)}")
     slug = validate_slug(episode_slug) if episode_slug else None
+    measured: dict[str, Any] | None = None
+    if expect_short:
+        measured = measure_video(file_path)
+        if problem := short_problem(measured):
+            raise ValueError(
+                f"{file_path.name} would upload as a regular video, not a Short: {problem}. "
+                f"Shorts must be square or vertical and at most {MAX_SHORT_SECONDS}s; nothing was uploaded."
+            )
 
     youtube = get_authenticated_youtube_service()
     body = {
@@ -168,6 +291,11 @@ def upload_video_to_youtube(
         "privacy_status": response["status"]["privacyStatus"],
         "episode_slug": slug,
     }
+    if measured is not None:
+        result["short"] = measured
+        # The Shorts feed only shows public videos, so an unlisted or private Short reaches nobody there.
+        if result["privacy_status"] != "public":
+            result["note"] = "Uploaded as a Short, but only public Shorts appear in the Shorts feed."
 
     # The video is already live here, so a log failure is reported, never raised (a retry would upload twice).
     record = {"uploaded_at": datetime.now(UTC).isoformat(), **result}

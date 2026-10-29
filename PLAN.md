@@ -28,7 +28,7 @@ Podcast hosting services charge monthly for object storage, a database table, an
 | `core/site.py` | Publishes the feed (R2 or website repo), syncs episode pages, scoped git deploy. |
 | `core/doctor.py` | End-to-end setup check. |
 | `core/thumbnail.py` | Thumbnail art prompts and the style-file headline renderer (Pillow). |
-| `core/jsonl.py` | Append-only logs of public actions (X and Instagram posts, dev.to and Substack drafts, YouTube uploads, thumbnail changes). |
+| `core/jsonl.py` | Append-only logs of public actions (X and Instagram posts, deletions and unpublishes, dev.to and Substack drafts, YouTube uploads, thumbnail changes). |
 | `core/credentials.py` | Credential files kept outside `.env` (Substack cookie, Instagram token): written 0600, checked by the doctor. |
 | `importers/` | `rss.py` (any host, GUID-preserving), `descript.py` (staging, chapters). |
 | `exporters/` | Astro Markdown pages, blog posts, social templates, X posting (via xurl), Instagram posting (Graph API, media staged on R2), dev.to and Substack drafts (shared loader: `blog_post.crosspost_source`), YouTube. |
@@ -109,6 +109,8 @@ CREATE TABLE collection_runs (id, source, started_at, finished_at, status, windo
 | Blog cross-posting to Substack: unpublished drafts via python-substack (private API), attribution line, https-only images, log + duplicate check | Done |
 | Metrics: dev.to and Substack collectors for cross-posted articles (from the cross-post logs) | Done |
 | Instagram posting (Page token or Unified login token): single-image feed posts (JPEG conversion, R2 staging, container publish, log + duplicate check) | Done |
+| YouTube Shorts check: `expect_short` measures the clip (ffprobe, rotation-aware) and refuses non-Shorts before upload | Done |
+| Content management: list and remove one owned item per call (dry run, removal log) on Instagram (delete), YouTube (delete), dev.to (unpublish; no API delete), and Substack (delete, private API) | Done |
 | Instagram: carousels, Stories, Reels (clips and audiograms), and an Instagram metrics collector | Planned |
 | Metrics: Apple/Spotify CSV import collectors | Planned |
 | Transcription, vector index, semantic search | Planned |

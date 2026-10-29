@@ -22,6 +22,8 @@ from core.site import deploy_site, rebuild_site
 from core.storage import R2StorageClient
 from core.thumbnail import generate_youtube_thumbnail, render_thumbnail
 from exporters.blog_post import blog_post_path, create_blog_post
+# Imported as modules for the content-management tools: list/delete function names repeat across platforms.
+from exporters import devto, instagram, substack_post, youtube
 from exporters.devto import crosspost_to_devto
 from exporters.instagram import PostType, post_to_instagram
 from exporters.social import draft_social_package
@@ -47,7 +49,10 @@ the playbook wins on anything show-specific.
 Rules that always apply:
 - Nothing goes public without explicit human approval of the exact content. Public tools: podcast_publish, \
 podcast_update_episode, podcast_deploy_site, podcast_post_to_x, podcast_post_to_instagram, \
-podcast_publish_to_youtube, podcast_set_youtube_thumbnail.
+podcast_publish_to_youtube, podcast_set_youtube_thumbnail, podcast_delete_instagram_post, podcast_delete_youtube_video, \
+podcast_unpublish_devto_article, podcast_delete_substack_post.
+- Removing content: list first, then remove only items the human named, one call per item, after a dry run they saw. \
+The podcast_delete_* tools are permanent; podcast_unpublish_devto_article only turns an article back into a draft.
 - Episode GUIDs and slugs are permanent, and excluded episodes stay excluded. When a tool refuses, report why; \
 never work around it.
 - If a public call fails, read {settings.data_dir / "social"}/*.jsonl before retrying, so nothing is posted twice.
@@ -63,6 +68,8 @@ mcp = FastMCP("podcast-server", instructions=INSTRUCTIONS)
 
 # MCP tool annotations: clients use them to decide which calls run without asking the human.
 READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
+# Only reads from an outside service (e.g. listing the show's posts); changes nothing anywhere.
+READ_ONLY_EXTERNAL = {"readOnlyHint": True, "openWorldHint": True}
 # Writes local files only (staging, renders, reports); never overwrites anything public.
 LOCAL_WRITE = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
 # Talks to outside services but only adds or refreshes data, and repeating the call changes nothing more.
@@ -391,8 +398,9 @@ def podcast_publish_to_youtube(
     tags: list[str] | None = None,
     privacy_status: PrivacyStatus = "unlisted",
     episode_slug: str | None = None,
+    expect_short: bool = False,
 ) -> dict[str, Any]:
-    """Upload a video to the authenticated YouTube channel using resumable chunked upload. Pass episode_slug so the video's metrics are credited to that episode."""
+    """Upload a video to the authenticated YouTube channel using resumable chunked upload. Pass episode_slug so the video's metrics are credited to that episode. Shorts: YouTube files any square or vertical video of up to 3 minutes as a Short (there's no separate upload); set expect_short=true to measure the file first and refuse one that would land as a regular video. Use privacy_status="public" for Shorts: unlisted ones never reach the Shorts feed. Custom thumbnails can't be set on Shorts through the API."""
     return upload_video_to_youtube(
         video_path=video_path,
         title=title,
@@ -400,6 +408,7 @@ def podcast_publish_to_youtube(
         tags=tags,
         privacy_status=privacy_status,
         episode_slug=episode_slug,
+        expect_short=expect_short,
     )
 
 
@@ -443,6 +452,54 @@ def podcast_post_to_instagram(
     return post_to_instagram(
         media_paths=media_paths, caption=caption, post_type=post_type, dry_run=dry_run, episode_slug=episode_slug
     )
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def podcast_list_instagram_posts(limit: int = 25, after: str | None = None) -> dict[str, Any]:
+    """List the Instagram account's posts, newest first (up to 100 per call): media id, type, date, URL, and the start of the caption. Pass the returned next_cursor as `after` for the next page; it's null on the last page."""
+    return instagram.list_posts(limit=limit, after=after)
+
+
+@mcp.tool(annotations=PUBLIC_EDIT)
+def podcast_delete_instagram_post(media_id: str, dry_run: bool = False) -> dict[str, Any]:
+    """Permanently delete one post from the configured Instagram account (only a post the human explicitly named; run with dry_run=true first and show what will go). Refuses ids that aren't the account's own posts. Carousels are deleted whole; ads can't be deleted. Logs the deleted post, caption included, to $DATA_DIR/social/instagram_deletions.jsonl. Needs the instagram_manage_contents permission on the token."""
+    return instagram.delete_post(media_id=media_id, dry_run=dry_run)
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def podcast_list_youtube_videos(limit: int = 25, page_token: str | None = None) -> dict[str, Any]:
+    """List the YouTube channel's uploads, newest first (up to 50 per call): video id, title, date, privacy, URL, and the episode it's tracked under. Pass the returned next_page_token for the next page; it's null on the last page."""
+    return youtube.list_videos(limit=limit, page_token=page_token)
+
+
+@mcp.tool(annotations=PUBLIC_EDIT)
+def podcast_delete_youtube_video(video_id: str, dry_run: bool = False) -> dict[str, Any]:
+    """Permanently delete one video from the authenticated YouTube channel (only a video the human explicitly named; run with dry_run=true first and show what will go). Refuses videos from other channels. Logs the deleted video, description included, to $DATA_DIR/social/youtube_deletions.jsonl. Needs the youtube.force-ssl scope on the token. Costs 50 quota units."""
+    return youtube.delete_video(video_id=video_id, dry_run=dry_run)
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def podcast_list_devto_articles() -> list[dict[str, Any]]:
+    """List the dev.to account's articles, published and drafts: article id, title, published flag and date, URL, and canonical URL."""
+    return devto.list_articles()
+
+
+@mcp.tool(annotations=PUBLIC_EDIT)
+def podcast_unpublish_devto_article(article_id: int, dry_run: bool = False) -> dict[str, Any]:
+    """Turn one of the dev.to account's published articles back into a draft (only an article the human named; dry_run first). dev.to's API can't delete: the article stays as a draft, and the human deletes it for good on dev.to if they want. Refuses articles that aren't the account's. Logged to $DATA_DIR/social/devto_unpublished.jsonl."""
+    return devto.unpublish_article(article_id=article_id, dry_run=dry_run)
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def podcast_list_substack_posts() -> list[dict[str, Any]]:
+    """List the Substack publication's published posts and unpublished drafts (private API): post id, title, state (published or draft), date, and URL (the editor URL for drafts)."""
+    return substack_post.list_posts()
+
+
+@mcp.tool(annotations=PUBLIC_EDIT)
+def podcast_delete_substack_post(post_id: int, dry_run: bool = False) -> dict[str, Any]:
+    """Permanently delete one post or draft from the Substack publication (only one the human named; dry_run first and show what will go). Reads it from the publication first, so ids from elsewhere are refused. Uses Substack's private API, like the editor's Delete button. Logged to $DATA_DIR/social/substack_deletions.jsonl."""
+    return substack_post.delete_post(post_id=post_id, dry_run=dry_run)
 
 
 # Additive, not public: it only creates an unpublished draft, which the human publishes on dev.to.

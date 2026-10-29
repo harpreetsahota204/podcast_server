@@ -660,7 +660,7 @@ class DevtoTests(unittest.TestCase):
 
         lookup, create = request.call_args_list
         self.assertTrue(lookup.args[0].startswith("https://dev.to/api/articles/me/all"))
-        url, headers, data = create.args
+        url, headers, data, _method = create.args
         article = json.loads(data)["article"]
         self.assertEqual((url, headers["api-key"]), ("https://dev.to/api/articles", "test-key"))
         self.assertEqual((article["published"], article["canonical_url"]), (False, self.CANONICAL))
@@ -702,6 +702,33 @@ class DevtoTests(unittest.TestCase):
         self.assertIn("HTTP 401", str(caught.exception))
         self.assertIn("unauthorized", str(caught.exception))
         self.assertNotIn("test-key", str(caught.exception))
+
+    def test_unpublish_only_touches_the_accounts_published_articles(self) -> None:
+        """Another account's id is refused, a draft is reported as already unpublished, and dry_run sends no PUT."""
+        from exporters.devto import DevtoError, unpublish_article
+
+        mine = [{"id": 7, "title": "Live", "published": True}, {"id": 8, "title": "Draft", "published": False}]
+        request = self._replies(mine, mine, mine)
+        with mock.patch("exporters.devto.open_https", request):
+            with self.assertRaises(DevtoError):
+                unpublish_article(99)
+            self.assertEqual(unpublish_article(8)["status"], "already_unpublished")
+            self.assertEqual(unpublish_article(7, dry_run=True)["status"], "dry_run")
+        self.assertEqual(request.call_count, 3)  # three article lookups, no PUT
+
+    def test_unpublish_sends_published_false_and_logs_it(self) -> None:
+        """The article goes back to draft with a PUT of published=false, and the change is logged."""
+        from exporters.devto import unpublish_article
+
+        request = self._replies([{"id": 7, "title": "Live", "published": True}], {"id": 7, "published": False})
+        with mock.patch("exporters.devto.open_https", request):
+            result = unpublish_article(7)
+
+        url, _headers, data, method = request.call_args_list[1].args
+        self.assertEqual((url, method), ("https://dev.to/api/articles/7", "PUT"))
+        self.assertEqual(json.loads(data), {"article": {"published": False}})
+        self.assertEqual((result["status"], result["published"]), ("unpublished", False))
+        self.assertEqual(json.loads(settings.devto_unpublish_log_path.read_text())["article_id"], 7)
 
 
 class SubstackTests(unittest.TestCase):
@@ -812,6 +839,192 @@ class SubstackTests(unittest.TestCase):
         path = save_session_cookie(" s%3Aabc.def \n")
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(path.read_text()), {"substack.sid": "s:abc.def", "connect.sid": "s:abc.def"})
+
+    def test_list_posts_shows_published_posts_and_drafts(self) -> None:
+        """Published posts link to their public page; drafts link to the editor."""
+        from exporters.substack_post import list_posts
+
+        with mock.patch("exporters.substack_post.Api") as api:
+            api.return_value.get_published_posts.return_value = {"posts": [{"id": 1, "title": "Live", "slug": "live"}]}
+            api.return_value.get_drafts.return_value = [{"id": 2, "draft_title": "WIP"}]
+            posts = list_posts()
+
+        self.assertEqual(api.return_value.get_drafts.call_args.kwargs["filter"], "draft")
+        self.assertEqual(
+            [(p["post_id"], p["state"], p["url"]) for p in posts],
+            [
+                (1, "published", "https://show.substack.com/p/live"),
+                (2, "draft", "https://show.substack.com/publish/post/2"),
+            ],
+        )
+
+    def test_delete_reads_the_post_first_and_logs_it(self) -> None:
+        """An unknown id is refused without deleting; dry_run deletes nothing; a real delete is logged."""
+        from exporters.substack_post import SubstackError, delete_post
+
+        with mock.patch("exporters.substack_post.Api") as api:
+            client = api.return_value
+            client.get_draft.side_effect = RuntimeError("404")
+            with self.assertRaises(SubstackError):
+                delete_post(404)
+            client.get_draft.side_effect = None
+            client.get_draft.return_value = {"id": 5, "title": "Old", "slug": "old", "is_published": True}
+            preview = delete_post(5, dry_run=True)
+            client.delete_draft.assert_not_called()
+            result = delete_post(5)
+
+        client.delete_draft.assert_called_once_with(5)
+        self.assertEqual((preview["status"], result["status"], result["state"]), ("dry_run", "deleted", "published"))
+        logged = json.loads(settings.substack_deletion_log_path.read_text())
+        self.assertEqual((logged["post_id"], logged["title"]), (5, "Old"))
+
+    def test_a_deleted_draft_no_longer_blocks_a_new_crosspost(self) -> None:
+        """Once the engine deleted a logged draft, cross-posting that blog post creates a fresh one."""
+        from core.jsonl import append_record
+        from exporters.substack_post import crosspost_to_substack
+
+        append_record(settings.substack_post_log_path, {"slug": "ep-one", "draft_id": 9, "edit_url": "https://x"})
+        append_record(settings.substack_deletion_log_path, {"post_id": 9})
+        with mock.patch("exporters.substack_post.Api") as api:
+            api.return_value.get_drafts.return_value = []
+            api.return_value.get_published_posts.return_value = {"posts": []}
+            api.return_value.create_draft_from_markdown.return_value = {"draft": {"id": 10}}
+            result = crosspost_to_substack("ep-one")
+        self.assertEqual((result["status"], result["draft_id"]), ("draft_created", 10))
+
+
+class YouTubeManagementTests(unittest.TestCase):
+    """Listing and deleting the channel's videos. The YouTube client is always mocked."""
+
+    def setUp(self) -> None:
+        """Use a temp data dir with one tracked video, and a fake client whose channel is UC-mine."""
+        self.tmp = Path(tempfile.mkdtemp())
+        self.saved = settings.data_dir
+        settings.data_dir = self.tmp
+        tracked = {"videos": [{"video_id": "abcdefghijk", "episode_slug": "ep-one"}]}
+        settings.youtube_videos_file.write_text(json.dumps(tracked))
+        self.youtube = mock.MagicMock()
+        channel = {"id": "UC-mine", "contentDetails": {"relatedPlaylists": {"uploads": "UU-mine"}}}
+        self.youtube.channels.return_value.list.return_value.execute.return_value = {"items": [channel]}
+        patcher = mock.patch("exporters.youtube.get_authenticated_youtube_service", return_value=self.youtube)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self) -> None:
+        """Restore settings and remove the temp dir."""
+        settings.data_dir = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _video(self, channel_id: str) -> None:
+        """Make videos.list return one video owned by `channel_id`."""
+        snippet = {"channelId": channel_id, "title": "Ep One", "description": "full description"}
+        self.youtube.videos.return_value.list.return_value.execute.return_value = {"items": [{"snippet": snippet}]}
+
+    def test_list_reads_the_uploads_playlist_with_episode_credit(self) -> None:
+        """Videos come from the channel's uploads playlist (capped at 50), credited to their tracked episode."""
+        from exporters.youtube import list_videos
+
+        item = {"snippet": {"resourceId": {"videoId": "abcdefghijk"}, "title": "Ep One"}}
+        playlist = self.youtube.playlistItems.return_value.list
+        playlist.return_value.execute.return_value = {"items": [item], "nextPageToken": "p2"}
+        page = list_videos(limit=500)
+
+        kwargs = playlist.call_args.kwargs
+        self.assertEqual((kwargs["playlistId"], kwargs["maxResults"]), ("UU-mine", 50))
+        self.assertEqual((page["videos"][0]["episode_slug"], page["next_page_token"]), ("ep-one", "p2"))
+
+    def test_delete_refuses_bad_ids_and_other_channels(self) -> None:
+        """A malformed id never reaches YouTube; another channel's video is read but never deleted."""
+        from exporters.youtube import delete_video
+
+        with self.assertRaises(ValueError):
+            delete_video("not an id")
+        self._video("UC-someone-else")
+        with self.assertRaises(ValueError):
+            delete_video("abcdefghijk")
+        self.youtube.videos.return_value.delete.assert_not_called()
+
+    def test_delete_dry_run_then_delete_logs_the_video(self) -> None:
+        """dry_run deletes nothing; a real delete removes the video and logs it with its description."""
+        from exporters.youtube import delete_video
+
+        self._video("UC-mine")
+        self.assertEqual(delete_video("abcdefghijk", dry_run=True)["status"], "dry_run")
+        self.youtube.videos.return_value.delete.assert_not_called()
+        result = delete_video("abcdefghijk")
+
+        self.youtube.videos.return_value.delete.assert_called_once_with(id="abcdefghijk")
+        self.assertEqual((result["status"], result["episode_slug"]), ("deleted", "ep-one"))
+        logged = json.loads(settings.youtube_deletion_log_path.read_text())
+        self.assertEqual((logged["video_id"], logged["description"]), ("abcdefghijk", "full description"))
+
+
+class YouTubeShortsTests(unittest.TestCase):
+    """The expect_short check: measurement, rotation, and refusal before upload (ffprobe and YouTube mocked)."""
+
+    def setUp(self) -> None:
+        """Point settings at a temp data dir and a fake ffprobe, with one video file to upload."""
+        self.tmp = Path(tempfile.mkdtemp())
+        self.saved = (settings.data_dir, settings.ffprobe_path)
+        settings.data_dir, settings.ffprobe_path = self.tmp, self.tmp / "ffprobe"
+        settings.ffprobe_path.write_text("#!/bin/sh\n")
+        self.video = self.tmp / "clip.mp4"
+        self.video.write_bytes(b"\x00" * 16)
+
+    def tearDown(self) -> None:
+        """Restore settings and remove the temp dir."""
+        settings.data_dir, settings.ffprobe_path = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _probe(width: int, height: int, seconds: float, rotation: int | None = None) -> mock.MagicMock:
+        """Mock subprocess.run returning ffprobe JSON for one video stream."""
+        stream: dict[str, Any] = {"width": width, "height": height}
+        if rotation is not None:
+            stream["side_data_list"] = [{"rotation": rotation}]
+        out = json.dumps({"streams": [stream], "format": {"duration": str(seconds)}})
+        return mock.MagicMock(return_value=subprocess.CompletedProcess([], 0, out, ""))
+
+    def test_rotation_flag_makes_a_landscape_frame_portrait(self) -> None:
+        """A phone video stored 1920x1080 with a quarter-turn flag is measured as the 1080x1920 viewers see."""
+        from exporters.youtube import measure_video, short_problem
+
+        with mock.patch("exporters.youtube.subprocess.run", self._probe(1920, 1080, 42.5, rotation=-90)):
+            video = measure_video(self.video)
+        self.assertEqual(video, {"width": 1080, "height": 1920, "duration_seconds": 42.5})
+        self.assertIsNone(short_problem(video))
+        both = short_problem({"width": 1920, "height": 1080, "duration_seconds": 200})
+        self.assertIn("horizontal", both)
+        self.assertIn("200s", both)
+
+    def test_expect_short_refuses_before_uploading(self) -> None:
+        """A horizontal or too-long file never reaches YouTube when a Short is expected."""
+        from exporters.youtube import upload_video_to_youtube
+
+        for width, height, seconds in ((1920, 1080, 30), (1080, 1920, 181)):
+            with (
+                self.subTest(size=(width, height), seconds=seconds),
+                mock.patch("exporters.youtube.subprocess.run", self._probe(width, height, seconds)),
+                mock.patch("exporters.youtube.get_authenticated_youtube_service") as service,
+                self.assertRaises(ValueError),
+            ):
+                upload_video_to_youtube(str(self.video), "t", "d", expect_short=True)
+            service.assert_not_called()
+
+    def test_expect_short_uploads_and_notes_a_non_public_short(self) -> None:
+        """A vertical 3-minute file uploads, reports its size, and warns that unlisted Shorts skip the feed."""
+        from exporters.youtube import upload_video_to_youtube
+
+        response = {"id": "abcdefghijk", "snippet": {"title": "t"}, "status": {"privacyStatus": "unlisted"}}
+        youtube = mock.MagicMock()
+        youtube.videos.return_value.insert.return_value.next_chunk.return_value = (None, response)
+        with (
+            mock.patch("exporters.youtube.subprocess.run", self._probe(1080, 1920, 180)),
+            mock.patch("exporters.youtube.get_authenticated_youtube_service", return_value=youtube),
+        ):
+            result = upload_video_to_youtube(str(self.video), "t", "d", expect_short=True)
+        self.assertEqual(result["short"], {"width": 1080, "height": 1920, "duration_seconds": 180.0})
+        self.assertIn("Shorts feed", result["note"])
 
 
 class InstagramTests(unittest.TestCase):
@@ -934,7 +1147,7 @@ class InstagramTests(unittest.TestCase):
         self.assertRegex(key, r"^instagram/[0-9a-f]{24}\.jpg$")
         self.assertEqual(r2.return_value.upload_file.call_args.kwargs["content_type"], "image/jpeg")
         create, status, publish, permalink = request.call_args_list
-        url, headers, data = create.args
+        url, headers, data, _method = create.args
         self.assertEqual(url, "https://graph.facebook.com/v26.0/17841/media")
         self.assertEqual(headers["Authorization"], f"Bearer {self.TOKEN}")
         self.assertEqual(
@@ -962,6 +1175,13 @@ class InstagramTests(unittest.TestCase):
             untouched.assert_not_called()
         self.assertEqual((repeat["status"], repeat["media_id"]), ("exists", "m-9"))
 
+        # Once the engine has deleted that post, the same image and caption can go out again.
+        from core.jsonl import append_record
+
+        append_record(settings.instagram_deletion_log_path, {"media_id": "m-9"})
+        with self._offline(self._replies(*published), self._r2()):
+            self.assertEqual(post_to_instagram([str(self.image)], caption="Same")["status"], "posted")
+
     def test_failed_processing_publishes_nothing(self) -> None:
         """A container Meta can't process is reported, and media_publish is never called."""
         from exporters.instagram import InstagramError, post_to_instagram
@@ -988,6 +1208,73 @@ class InstagramTests(unittest.TestCase):
         self.assertIn("Error validating access token", message)
         self.assertIn("exporters.instagram login", message)
         self.assertNotIn(self.TOKEN, message)
+
+    def test_list_posts_pages_by_cursor_and_trims_captions(self) -> None:
+        """Pages are capped at 100, the cursor carries over, captions are trimmed, and the last page has no cursor."""
+        from exporters.instagram import CAPTION_PREVIEW_CHARS, list_posts
+
+        post = {"id": "1", "media_type": "IMAGE", "media_product_type": "FEED", "caption": "x" * 500}
+        request = self._replies(
+            {"data": [post], "paging": {"cursors": {"after": "c2"}, "next": "https://graph.facebook.com/next"}},
+            {"data": [], "paging": {"cursors": {"after": "c3"}}},
+        )
+        with mock.patch("exporters.instagram.open_https", request):
+            first = list_posts(limit=500)
+            last = list_posts(after=first["next_cursor"])
+
+        first_url, second_url = (call.args[0] for call in request.call_args_list)
+        self.assertIn("/17841/media?", first_url)
+        self.assertIn("limit=100", first_url)
+        self.assertIn("after=c2", second_url)
+        listed = first["posts"][0]
+        self.assertEqual((listed["type"], len(listed["caption"])), ("feed/image", CAPTION_PREVIEW_CHARS))
+        self.assertEqual((first["next_cursor"], last["next_cursor"]), ("c2", None))
+
+    def test_delete_refuses_bad_ids_and_other_accounts_before_deleting(self) -> None:
+        """A non-numeric id never reaches Meta, and another account's post is read but never deleted."""
+        from exporters.instagram import InstagramError, delete_post
+
+        with mock.patch("exporters.instagram.open_https") as request, self.assertRaises(ValueError):
+            delete_post("me/accounts")
+        request.assert_not_called()
+
+        request = self._replies({"id": "9", "username": "someoneelse"})
+        with mock.patch("exporters.instagram.open_https", request), self.assertRaises(InstagramError):
+            delete_post("9")
+        self.assertEqual(request.call_count, 1)
+
+    def test_delete_dry_run_reads_only_and_delete_logs_the_full_post(self) -> None:
+        """dry_run reads the post and stops; a real delete sends DELETE and logs the post with its full caption."""
+        from exporters.instagram import delete_post
+
+        post = {"id": "9", "username": "TestShow", "media_type": "VIDEO", "permalink": "https://i/p/9"}
+        post["caption"] = "c" * 300
+        request = self._replies(post, post, {"success": True, "deleted_id": "9"})
+        with mock.patch("exporters.instagram.open_https", request):
+            preview = delete_post("9", dry_run=True)
+            result = delete_post("9")
+
+        self.assertEqual((preview["status"], result["status"]), ("dry_run", "deleted"))
+        self.assertEqual(request.call_count, 3)
+        url, _headers, _data, method = request.call_args_list[2].args
+        self.assertEqual((url, method), ("https://graph.facebook.com/v26.0/9", "DELETE"))
+        logged = json.loads(settings.instagram_deletion_log_path.read_text())
+        self.assertEqual((logged["media_id"], logged["url"], len(logged["caption"])), ("9", "https://i/p/9", 300))
+
+    def test_transient_delete_error_says_retry_is_safe(self) -> None:
+        """Meta's intermittent delete failure shows its user message and that nothing was deleted."""
+        import urllib.error
+
+        from exporters.instagram import InstagramError, delete_post
+
+        body = json.dumps({"error": {"message": "Fatal", "error_subcode": 2207085, "error_user_msg": "Internal error"}})
+        failure = urllib.error.HTTPError("https://graph.facebook.com/9", 500, "Error", None, io.BytesIO(body.encode()))
+        request = mock.MagicMock(side_effect=[io.BytesIO(b'{"id": "9", "username": "testshow"}'), failure])
+        with mock.patch("exporters.instagram.open_https", request), self.assertRaises(InstagramError) as caught:
+            delete_post("9")
+        self.assertIn("Internal error", str(caught.exception))
+        self.assertIn("retrying is safe", str(caught.exception))
+        self.assertFalse(settings.instagram_deletion_log_path.exists())
 
     def _login(
         self,
@@ -1032,7 +1319,7 @@ class InstagramTests(unittest.TestCase):
         code, request, _ = self._login("\x1b[200~EAA abc\r\ndef\x1b[201~\n", shared)
 
         self.assertEqual(code, 0)
-        url, headers, _data = request.call_args_list[1].args
+        url, headers, _data, _method = request.call_args_list[1].args
         self.assertEqual(url, "https://graph.facebook.com/v26.0/me/assigned_instagram_accounts?fields=id,username")
         self.assertEqual(headers["Authorization"], "Bearer EAAabcdef")
         saved = json.loads(settings.instagram_token_path.read_text())

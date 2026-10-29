@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     descript_api_bearer: str | None = None
     descript_api_key: str | None = None
     youtube_token_path: Path = Path.home() / ".config" / "podcast_server" / "youtube_token.json"
+    ffprobe_path: Path | None = Field(
+        default=None, description="ffprobe binary for the YouTube Shorts check; default: first ffprobe on PATH"
+    )
     hf_backup_repo: str | None = Field(default=None, description="Private HF dataset id for backups")
     thumbnail_style: str = "clean, high-contrast studio aesthetic"
     # X posting goes through the xurl CLI, which keeps its own OAuth tokens; the engine never sees them.
@@ -227,6 +230,11 @@ class Settings(BaseSettings):
         return self.data_dir / "social" / "youtube_thumbnails.jsonl"
 
     @property
+    def youtube_deletion_log_path(self) -> Path:
+        """Append-only record of every YouTube video the engine deleted, with what it was."""
+        return self.data_dir / "social" / "youtube_deletions.jsonl"
+
+    @property
     def youtube_videos_file(self) -> Path:
         """Optional mapping of the show's other YouTube videos to episodes, for metrics on a back catalog."""
         return self.data_dir / "youtube_videos.json"
@@ -242,14 +250,29 @@ class Settings(BaseSettings):
         return self.data_dir / "social" / "devto_posts.jsonl"
 
     @property
+    def devto_unpublish_log_path(self) -> Path:
+        """Append-only record of every dev.to article the engine unpublished (back to draft)."""
+        return self.data_dir / "social" / "devto_unpublished.jsonl"
+
+    @property
     def substack_post_log_path(self) -> Path:
         """Append-only record of every Substack draft the engine created (one JSON object per line)."""
         return self.data_dir / "social" / "substack_posts.jsonl"
 
     @property
+    def substack_deletion_log_path(self) -> Path:
+        """Append-only record of every Substack post or draft the engine deleted, with what it was."""
+        return self.data_dir / "social" / "substack_deletions.jsonl"
+
+    @property
     def instagram_post_log_path(self) -> Path:
         """Append-only record of every Instagram post the engine published (one JSON object per line)."""
         return self.data_dir / "social" / "instagram_posts.jsonl"
+
+    @property
+    def instagram_deletion_log_path(self) -> Path:
+        """Append-only record of every Instagram post the engine deleted, with what it was (one JSON object per line)."""
+        return self.data_dir / "social" / "instagram_deletions.jsonl"
 
     @property
     def excluded_episodes_file(self) -> Path:

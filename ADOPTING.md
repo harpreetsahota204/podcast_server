@@ -142,6 +142,7 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
    uv run --with google-auth-oauthlib python -c "
    from google_auth_oauthlib.flow import InstalledAppFlow
    scopes = ['https://www.googleapis.com/auth/youtube.upload',
+             'https://www.googleapis.com/auth/youtube.force-ssl',         # thumbnails and deleting videos
              'https://www.googleapis.com/auth/youtube.readonly',          # metrics: lifetime counts
              'https://www.googleapis.com/auth/yt-analytics.readonly']     # metrics: daily views, watch time
    flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', scopes)
@@ -149,6 +150,7 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
    ```
 
 3. Move `youtube_token.json` somewhere private, `chmod 600` it, and set `YOUTUBE_TOKEN_PATH` in `.env`. Uploads default to `unlisted`; pass `episode_slug` so the video's metrics are credited to its episode (uploads are logged to `$DATA_DIR/social/youtube_uploads.jsonl`).
+4. **Shorts (optional).** YouTube has no separate Shorts upload: any square or vertical video of up to 3 minutes becomes a Short. To have the engine check a clip before uploading, install ffmpeg (for `ffprobe`; set `FFPROBE_PATH` if it isn't on the `PATH` your MCP client starts the server with) and pass `expect_short=true`. Upload Shorts as `public`, since unlisted ones never reach the Shorts feed, and set their thumbnails in YouTube Studio: the API can't.
 
 **Descript staging** (`podcast_stage_from_descript`): the tool takes the episode's transcript exported from Descript as Markdown (markers such as `[00:12:30] Chapter title` or timestamped headings become chapters), plus either the published audio's download URL or a local MP3 path. Set `DESCRIPT_API_BEARER` only if your download URLs require authentication; it's sent to `descript.com` hosts only.
 
@@ -165,7 +167,7 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
 
 **Posting to Instagram** (`podcast_post_to_instagram`, about 30 minutes): the engine posts through Meta's Graph API with either a **Page token** (Facebook login; the Instagram account must be linked to a Facebook Page) or a **Unified login** token (no Page needed). An app that only serves accounts you own or manage needs no App Review (Standard Access), and Development mode is enough.
 1. **Professional account.** In the Instagram app: Settings → Account type and tools → switch to a **Business** or **Creator** account. Personal accounts can't use the API. The account must be public.
-2. **Meta app.** At [developers.facebook.com](https://developers.facebook.com), create an app with the **Manage messaging & content on Instagram** use case. Under **Use cases** → that use case → **Customize** → **Permissions and features**, make sure `instagram_basic`, `instagram_content_publish`, `pages_show_list`, and `pages_read_engagement` are added (and `business_management` if your Page belongs to a business portfolio).
+2. **Meta app.** At [developers.facebook.com](https://developers.facebook.com), create an app with the **Manage messaging & content on Instagram** use case. Under **Use cases** → that use case → **Customize** → **Permissions and features**, make sure `instagram_basic`, `instagram_content_publish`, `pages_show_list`, and `pages_read_engagement` are added (and `business_management` if your Page belongs to a business portfolio). Add `instagram_manage_contents` too if you want agents to delete posts (`podcast_delete_instagram_post`; Meta supports deleting only with Facebook-login tokens, not Unified login).
 3. **Token, with a Page (recommended when the account is linked to one).** `login` takes a long-lived user token and stores the linked Page's own token instead, which never expires; the user token is never saved.
    1. Open [Graph API Explorer](https://developers.facebook.com/tools/explorer/), pick your app, choose **Get User Access Token**, tick the permissions from step 2, click **Generate Access Token**, and approve with the Page and Instagram account selected.
    2. Click the **ⓘ** next to the token → **Open in Access Token Tool** → **Extend Access Token**, and copy the long-lived user token. Paste it only at the `login` prompt (step 5), never into a chat or file.
@@ -224,6 +226,7 @@ To add a source (YouTube, a hosting platform's CSV export, a newsletter), subcla
 | Re-check setup | `uv run python -m core.doctor` |
 | Cross-post the blog | Agent: `podcast_crosspost_to_devto` and `podcast_crosspost_to_substack` once the post is live → you publish each draft on its platform |
 | Post to Instagram | Agent: your approval of the exact image and caption → `podcast_post_to_instagram` |
+| Remove a post or video | Agent: the platform's `podcast_list_*` tool → you name the item → `podcast_delete_instagram_post`, `podcast_delete_youtube_video`, `podcast_delete_substack_post` (permanent), or `podcast_unpublish_devto_article` (back to draft), first with `dry_run=true` → your approval → the same without `dry_run`. |
 | Instagram says the token is invalid | Get a new long-lived user token (Posting to Instagram, step 3), then `uv run python -m exporters.instagram login` |
 | Substack says the cookie expired | `uv run python -m exporters.substack_post login` with a fresh cookie value |
 | Make a YouTube thumbnail | Agent: `podcast_stage_thumbnail` → renders the art → `podcast_render_thumbnail` → your approval → `podcast_set_youtube_thumbnail` |
@@ -271,6 +274,9 @@ To add a source (YouTube, a hosting platform's CSV export, a newsletter), subcla
 | dev.to throttles new accounts | After a couple of articles it answers HTTP 429 with a 300-second cooldown; bulk cross-posting has to pace itself |
 | Instagram captions can't carry links | Links in captions aren't clickable; point people to the link in your profile instead |
 | New Meta apps don't offer Instagram login | Instagram login is kept for existing integrations; new apps get Unified login and Facebook login, both on `graph.facebook.com` |
+| YouTube decides what's a Short | Square or vertical and up to 3 minutes, nothing else; a 3:05 clip or a 16:9 export uploads as a regular video. `expect_short=true` catches both before uploading |
+| dev.to's API can't delete articles | Authors can only unpublish (back to draft) through it; deleting for good is done on dev.to |
+| Instagram API deletions are permanent | They skip Instagram's 30-day Recently Deleted folder; download your account data first (Accounts Center → Download your information) |
 | Graph API Explorer replies contain live tokens | A `me/accounts` reply holds each Page's token; pasting it into a chat or ticket exposes it. Give `login` the user token instead, and revoke a leaked token by removing the app under Facebook → Settings → Business integrations |
 | A Unified login token can reach no account | Its system user may never be given the Instagram account, even when you select it; if the account is linked to a Facebook Page, a Page token works instead |
 | Substack's session cookie expires | Cross-posting and Substack metrics stop with a sign-in error; re-run `uv run python -m exporters.substack_post login` |
@@ -280,6 +286,7 @@ To add a source (YouTube, a hosting platform's CSV export, a newsletter), subcla
 - MP3 only (`audio/mpeg`); the importer skips other enclosure types and lists them.
 - Storage is Cloudflare R2 (S3 API; other S3-compatible stores need small changes in `core/storage.py`).
 - `astro` mode writes Markdown + YAML frontmatter and deploys by git push; other site setups use `SITE_MODE=none`.
+- Content management removes one item per call (no bulk tools), and dev.to articles can only be unpublished, not deleted.
 - Instagram posting covers single-image feed posts; carousels, Stories, Reels, and Instagram metrics are planned (see [`PLAN.md`](./PLAN.md)).
 - Transcription and semantic search are planned, not built (see [`PLAN.md`](./PLAN.md)).
 - Blog cross-posting needs `SITE_MODE=astro` (it reads your site's blog posts). Substack drafts and stats use Substack's private web API, because it has no official one; they can break when Substack changes it. Cross-posts carry today's date on dev.to and Substack.
