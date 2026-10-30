@@ -25,6 +25,7 @@ from fastmcp.exceptions import ToolError
 from test_engine import make_episode
 
 from core import backup
+from core.capabilities import CHANNELS
 from core.config import PROJECT_ROOT, settings
 from core.db import CatalogDB
 from mcp_server.server import mcp
@@ -56,6 +57,11 @@ class ToolSurfaceTests(unittest.IsolatedAsyncioTestCase):
         """AGENTS.md and README can't drift from the server: a tool added or removed in code fails here."""
         self.assertEqual(_tool_names_in_agents_md(), set(self.tools))
         self.assertEqual(_tool_names_in_readme(), set(self.tools))
+
+    def test_capabilities_name_only_real_tools(self) -> None:
+        """podcast_capabilities can't point the agent at a tool that was renamed or removed."""
+        named = {tool for _, _, tools in CHANNELS for tool in tools}
+        self.assertEqual(named - set(self.tools), set())
 
     def test_every_tool_declares_whether_it_is_read_only(self) -> None:
         """Without an explicit hint, clients assume the worst (or the best) about a tool."""

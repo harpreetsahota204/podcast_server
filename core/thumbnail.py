@@ -11,6 +11,10 @@ Two steps, split so the engine never calls an image model:
 The look (fonts, colors, layout) comes from `$DATA_DIR/templates/thumbnail_style.json`,
 so each show keeps its own identity outside the engine. Without that file, plain
 defaults apply (Pillow's built-in font, white text, gold accent).
+
+`render_episode_art` reuses the same art and style for the episode's square icon in
+podcast apps (the feed's per-episode `itunes:image`): a square crop around the subject,
+the headline in a band across the bottom, and the show's wordmark.
 """
 
 from dataclasses import dataclass
@@ -48,6 +52,9 @@ class ThumbnailStyle(BaseModel):
     line_spacing: float = Field(default=0.08, description="Gap between headline lines, as a fraction of the font size")
     label_ratio: float = Field(default=0.22, description="Label size as a fraction of the headline size")
     uppercase: bool = True
+    wordmark: str | None = Field(
+        default=None, description="Show name at the bottom of episode art; default PODCAST_TITLE, empty string for none"
+    )
 
 
 def load_style(path: Path | None = None) -> ThumbnailStyle:
@@ -176,12 +183,16 @@ def render_thumbnail(
     label: str | None = None,
     accent_line: int | None = -1,
     style: ThumbnailStyle | None = None,
+    size: tuple[int, int] = THUMB_SIZE,
+    focus: tuple[float, float] = (0.5, 0.5),
+    mirror: bool = False,
 ) -> dict[str, Any]:
     """Composite the headline (and optional small label) onto base art; return the file path and layout facts.
 
     `accent_line` picks the line drawn in the accent color (default: the last; None for none).
-    The art is cover-cropped to 1280×720. Output is PNG, or JPEG when PNG would exceed
-    YouTube's 2 MB limit.
+    The art is cover-cropped to `size` (default YouTube's 1280×720), keeping the point at
+    `focus` (fractions of the art's width and height) in view; `mirror` flips it first, for art
+    whose subject sits where the headline goes. Output is PNG, or JPEG when PNG would exceed 2 MB.
     """
     base_image_path, output_path = Path(base_image_path).resolve(), Path(output_path).resolve()
     if base_image_path == output_path:
@@ -194,9 +205,10 @@ def render_thumbnail(
         lines = [line.upper() for line in lines]
 
     with Image.open(base_image_path) as art:
-        canvas = _apply_scrim(ImageOps.fit(art.convert("RGB"), THUMB_SIZE, Image.Resampling.LANCZOS), style)
+        art = ImageOps.mirror(art.convert("RGB")) if mirror else art.convert("RGB")
+        canvas = _apply_scrim(ImageOps.fit(art, size, Image.Resampling.LANCZOS, centering=focus), style)
     draw = ImageDraw.Draw(canvas)
-    width, height = THUMB_SIZE
+    width, height = size
     left, top, right, bottom = (round(f * d) for f, d in zip(style.text_box, (width, height, width, height), strict=True))
 
     layout = _fit(draw, lines, label, style, (right - left, bottom - top))
@@ -226,4 +238,165 @@ def render_thumbnail(
         "headline_font_px": layout.headline_px,
         "lines": lines,
         "next_step": "Show the image for approval; then podcast_set_youtube_thumbnail(video_id, path).",
+    }
+
+
+# Substack's full-fit post preview (14:10); its social cards crop that to 1200×630 (1.91:1) around the center.
+NEWSLETTER_PREVIEW_SIZE = (1456, 1048)
+SOCIAL_CARD_RATIO = 1200 / 630
+# Share of the height a centered 1.91:1 crop cuts from the top (and the bottom), plus a little room.
+_SOCIAL_CROP_MARGIN = (1 - NEWSLETTER_PREVIEW_SIZE[0] / SOCIAL_CARD_RATIO / NEWSLETTER_PREVIEW_SIZE[1]) / 2 + 0.03
+
+
+def render_newsletter_preview(
+    base_image_path: Path,
+    headline_lines: list[str],
+    output_path: Path,
+    label: str | None = None,
+    accent_line: int | None = -1,
+    focus: tuple[float, float] = (0.5, 0.5),
+    mirror: bool = False,
+) -> dict[str, Any]:
+    """A newsletter's post preview (thumbnail and social card) in the show's thumbnail style, at 1456×1048.
+
+    The headline stays inside the band a 1200×630 social crop keeps, so the text survives
+    on every surface that shows the preview.
+    """
+    style = load_style()
+    left, top, right, bottom = style.text_box
+    style = style.model_copy(update={
+        "text_box": (left, max(top, _SOCIAL_CROP_MARGIN), right, min(bottom, 1 - _SOCIAL_CROP_MARGIN)),
+    })
+    result = render_thumbnail(
+        base_image_path, headline_lines, output_path, label=label, accent_line=accent_line, style=style,
+        size=NEWSLETTER_PREVIEW_SIZE, focus=focus, mirror=mirror,
+    )
+    return {**result, "next_step": "Show the image for approval; then set cover_image in the newsletter file."}
+
+
+# Episode art: Apple and Spotify want a square, 1400-3000 px; 2048 is sharp on every screen.
+EPISODE_ART_PX = 2048
+# Layout, as fractions of the side: the fade covers the lower part and the text sits inside it.
+_FADE_START, _FADE_FULL, _FADE_OPACITY = 0.48, 0.74, 0.94
+_MARGIN, _TEXT_BLOCK_HEIGHT = 0.065, 0.30
+_MAX_HEADLINE = 0.15  # caps the headline so a two-word one doesn't fill the icon
+_LABEL_RATIO, _WORDMARK_RATIO = 0.024, 0.02
+_LABEL_GAP, _WORDMARK_GAP = 0.02, 0.035  # below the label, and between the headline and the wordmark
+
+
+def square_crop_box(width: int, height: int, focus_x: float) -> tuple[int, int, int, int]:
+    """The largest square in the image, centered horizontally on `focus_x` (0-1) and kept inside it."""
+    side = min(width, height)
+    left = min(max(round(focus_x * width - side / 2), 0), width - side)
+    top = (height - side) // 2
+    return left, top, left + side, top + side
+
+
+def _bottom_fade(canvas: Image.Image, style: ThumbnailStyle) -> Image.Image:
+    """Darken the lower part of a square so the text reads over any art."""
+    side = canvas.height
+    start, full, peak = _FADE_START * side, _FADE_FULL * side, int(255 * _FADE_OPACITY)
+    column = [0 if y <= start else peak if y >= full else int(peak * (y - start) / (full - start)) for y in range(side)]
+    # One column of the mask, stretched sideways: far cheaper than per-pixel work.
+    mask = Image.new("L", (1, side))
+    mask.putdata(column)
+    return Image.composite(Image.new("RGB", canvas.size, style.scrim_color), canvas, mask.resize(canvas.size))
+
+
+def _block_size(draw: ImageDraw.ImageDraw, lines: list[str], style: ThumbnailStyle, size: int) -> tuple[int, int]:
+    """Width and height of the headline lines stacked at `size` px, outlines and line gaps included."""
+    font, stroke = _font(style.headline_font, size), round(size * style.stroke_ratio)
+    boxes = [draw.textbbox((0, 0), line, font=font, stroke_width=stroke) for line in lines]
+    gaps = round(size * style.line_spacing) * (len(lines) - 1)
+    return max(b[2] - b[0] for b in boxes), sum(b[3] - b[1] for b in boxes) + gaps
+
+
+def _episode_headline_size(draw: ImageDraw.ImageDraw, lines: list[str], style: ThumbnailStyle, box: tuple[int, int]) -> int:
+    """Largest headline size (px) that fits `box`, by binary search, capped so short headlines stay proportionate."""
+    low, high = MIN_FONT_PX, round(_MAX_HEADLINE * EPISODE_ART_PX)
+    while low < high:
+        size = (low + high + 1) // 2
+        width, height = _block_size(draw, lines, style, size)
+        if width <= box[0] and height <= box[1]:
+            low = size
+        else:
+            high = size - 1
+    return low
+
+
+def _draw_line(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font: ImageFont.FreeTypeFont,
+               fill: str, stroke: int, style: ThumbnailStyle) -> int:
+    """Draw one line with its top edge at xy (ignoring the font's internal leading); return its height."""
+    left, top, _, bottom = draw.textbbox((0, 0), text, font=font, stroke_width=stroke)
+    draw.text((xy[0] - left, xy[1] - top), text, font=font, fill=fill, stroke_width=stroke, stroke_fill=style.stroke_color)
+    return bottom - top
+
+
+def render_episode_art(
+    base_image_path: Path,
+    headline_lines: list[str],
+    output_path: Path,
+    label: str | None = None,
+    focus_x: float = 0.33,
+    style: ThumbnailStyle | None = None,
+) -> dict[str, Any]:
+    """Square episode art from the thumbnail's clean art: crop, bottom fade, label, headline, wordmark.
+
+    `focus_x` (0-1) centers the square crop horizontally; the thumbnail prompt puts the subject
+    in the left two-thirds, so the default sits there. The last headline line takes the accent
+    color, like the thumbnail. Writes a 2048 px RGB JPEG that podcast_publish accepts as
+    `episode_image_path`.
+    """
+    base_image_path, output_path = Path(base_image_path).resolve(), Path(output_path).resolve()
+    if base_image_path == output_path:
+        raise ValueError("output_path must differ from base_image_path, or the clean art would be overwritten.")
+    if not 0 <= focus_x <= 1:
+        raise ValueError("focus_x is a fraction of the art's width, from 0 to 1.")
+    lines = [line.strip() for line in headline_lines if line.strip()]
+    if not 1 <= len(lines) <= MAX_HEADLINE_LINES:
+        raise ValueError(f"Give 1-{MAX_HEADLINE_LINES} non-empty headline lines (2-3 short words read best).")
+    style = style or load_style()
+    wordmark = settings.podcast_title if style.wordmark is None else style.wordmark
+    if style.uppercase:
+        lines, wordmark = [line.upper() for line in lines], wordmark.upper()
+
+    # 1. Square crop around the subject, scaled to the icon size, faded at the bottom.
+    with Image.open(base_image_path) as art:
+        square = art.convert("RGB").crop(square_crop_box(art.width, art.height, focus_x))
+    canvas = _bottom_fade(square.resize((EPISODE_ART_PX, EPISODE_ART_PX), Image.Resampling.LANCZOS), style)
+    draw = ImageDraw.Draw(canvas)
+
+    # 2. Bottom-up layout: wordmark on the bottom margin, the headline block above it, the label above that.
+    side, margin = EPISODE_ART_PX, round(_MARGIN * EPISODE_ART_PX)
+    wordmark_font = _font(style.label_font, round(_WORDMARK_RATIO * side))
+    wordmark_top = side - margin
+    if wordmark:
+        wordmark_box = draw.textbbox((0, 0), wordmark, font=wordmark_font)
+        wordmark_top -= wordmark_box[3] - wordmark_box[1]
+    size = _episode_headline_size(draw, lines, style, (side - 2 * margin, round(_TEXT_BLOCK_HEIGHT * side)))
+    headline_font, stroke, gap = _font(style.headline_font, size), round(size * style.stroke_ratio), round(size * style.line_spacing)
+    y = wordmark_top - round(_WORDMARK_GAP * side) - _block_size(draw, lines, style, size)[1]
+
+    # 3. Draw the label, the headline (last line in the accent color), and the wordmark.
+    if label:
+        label_font = _font(style.label_font, round(_LABEL_RATIO * side))
+        label_box = draw.textbbox((0, 0), label, font=label_font)
+        label_top = y - round(_LABEL_GAP * side) - (label_box[3] - label_box[1])
+        _draw_line(draw, (margin, label_top), label, label_font, style.text_color, 0, style)
+    for index, line in enumerate(lines):
+        color = style.accent_color if index == len(lines) - 1 else style.text_color
+        y += _draw_line(draw, (margin, y), line, headline_font, color, stroke, style) + gap
+    if wordmark:
+        _draw_line(draw, (margin, wordmark_top), wordmark, wordmark_font, style.accent_color, 0, style)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path, "JPEG", quality=90, optimize=True)
+    return {
+        "status": "rendered",
+        "path": str(output_path),
+        "size_px": EPISODE_ART_PX,
+        "file_size_bytes": output_path.stat().st_size,
+        "headline_font_px": size,
+        "lines": lines,
+        "next_step": "Show it for approval (check it small, too); then podcast_publish(..., episode_image_path=path).",
     }

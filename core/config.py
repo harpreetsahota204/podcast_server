@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     podcast_language: str = "en-us"
     podcast_explicit: bool = False
     default_tags: list[str] = Field(default_factory=list, description="Tags used when a tool call gives none")
+    require_episode_image: bool = Field(
+        default=False, description="podcast_publish refuses a new episode without episode_image_path (its own square art)"
+    )
 
     # --- Storage (R2 credentials are only needed for uploads) ---
     r2_account_id: str | None = None
@@ -85,6 +88,9 @@ class Settings(BaseSettings):
     youtube_token_path: Path = Path.home() / ".config" / "podcast_server" / "youtube_token.json"
     ffprobe_path: Path | None = Field(
         default=None, description="ffprobe binary for the YouTube Shorts check; default: first ffprobe on PATH"
+    )
+    ffmpeg_path: Path | None = Field(
+        default=None, description="ffmpeg binary for podcast_make_gif; default: first ffmpeg on PATH"
     )
     hf_backup_repo: str | None = Field(default=None, description="Private HF dataset id for backups")
     thumbnail_style: str = "clean, high-contrast studio aesthetic"
@@ -206,6 +212,21 @@ class Settings(BaseSettings):
         return self.data_dir / "transcripts"
 
     @property
+    def discovery_dir(self) -> Path:
+        """Discovery briefs (`<slug>.json`): the approved search phrases each publish is checked against."""
+        return self.data_dir / "discovery"
+
+    @property
+    def media_dir(self) -> Path:
+        """Staged GIFs and images for newsletters and blog posts, before podcast_upload_media_asset hosts them."""
+        return self.data_dir / "media"
+
+    @property
+    def newsletters_dir(self) -> Path:
+        """Original Substack newsletter articles (`<slug>.md` with title/subtitle/tags frontmatter)."""
+        return self.data_dir / "newsletters"
+
+    @property
     def backup_dir(self) -> Path:
         """Staging folder mirrored into the backup dataset."""
         return self.data_dir / "backup"
@@ -259,6 +280,11 @@ class Settings(BaseSettings):
     def substack_post_log_path(self) -> Path:
         """Append-only record of every Substack draft the engine created (one JSON object per line)."""
         return self.data_dir / "social" / "substack_posts.jsonl"
+
+    @property
+    def substack_newsletter_log_path(self) -> Path:
+        """Append-only record of every newsletter draft, update, schedule, unschedule, and send on Substack."""
+        return self.data_dir / "social" / "substack_newsletters.jsonl"
 
     @property
     def substack_deletion_log_path(self) -> Path:

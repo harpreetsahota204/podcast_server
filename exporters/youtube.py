@@ -10,6 +10,9 @@ to `$DATA_DIR/social/youtube_deletions.jsonl`).
 YouTube has no Shorts upload: it files a square or vertical video of up to 3 minutes as a
 Short by itself. `expect_short` measures the file with ffprobe first and refuses one that
 would land as a regular video.
+
+Uploads are checked against the episode's discovery brief (`core.discovery`) before any
+bytes are sent, and can add a caption track and a playlist entry once the video is up.
 """
 
 import json
@@ -17,6 +20,7 @@ import logging
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -26,6 +30,7 @@ from googleapiclient.discovery import Resource, build
 from googleapiclient.http import MediaFileUpload
 
 from core.config import settings
+from core.discovery import check_youtube, gate
 from core.formatting import validate_slug
 from core.jsonl import append_record, read_records
 from core.thumbnail import MAX_THUMBNAIL_BYTES
@@ -38,6 +43,11 @@ VIDEO_CONTENT_TYPES = {".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": 
 # YouTube Data API hard limits on snippet fields.
 MAX_TITLE_CHARS = 100
 MAX_DESCRIPTION_CHARS = 5000
+# Tags share a 500-character budget; YouTube counts the commas between them and quotes around multi-word tags.
+MAX_TAGS_CHARS = 500
+# Caption files YouTube reads; a plain-text transcript is timed to the audio by YouTube (`sync`).
+CAPTION_TYPES = {".vtt", ".srt", ".txt"}
+PLAYLIST_ID_RE = re.compile(r"[A-Za-z0-9_-]{2,64}")
 SCIENCE_AND_TECH_CATEGORY = "28"
 # Needed only for daily views and watch time; uploads and lifetime counts work without it.
 ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly"
@@ -221,6 +231,59 @@ def delete_video(video_id: str, dry_run: bool = False) -> dict[str, Any]:
     return result
 
 
+def _tags_length(tags: list[str]) -> int:
+    """Characters YouTube counts against the tag budget: commas between tags, quotes around multi-word ones."""
+    return sum(len(tag) + (2 if " " in tag else 0) for tag in tags) + max(len(tags) - 1, 0)
+
+
+def _check_snippet_limits(title: str, description: str, tags: list[str]) -> None:
+    """Refuse text YouTube would reject or cut, instead of silently truncating it."""
+    if len(title) > MAX_TITLE_CHARS:
+        raise ValueError(f"YouTube titles allow {MAX_TITLE_CHARS} characters; this one has {len(title)}.")
+    if len(description) > MAX_DESCRIPTION_CHARS:
+        raise ValueError(f"YouTube descriptions allow {MAX_DESCRIPTION_CHARS} characters; this one has {len(description)}.")
+    if (used := _tags_length(tags)) > MAX_TAGS_CHARS:
+        raise ValueError(f"YouTube tags allow {MAX_TAGS_CHARS} characters in total; these use {used}.")
+
+
+def _caption_file(captions_path: str) -> Path:
+    """Resolve and check a caption file before anything is uploaded."""
+    path = Path(captions_path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Caption file not found: {path}")
+    if path.suffix.lower() not in CAPTION_TYPES:
+        raise ValueError(f"Unsupported caption type {path.suffix!r}; allowed: {', '.join(sorted(CAPTION_TYPES))}")
+    return path
+
+
+def _insert_captions(youtube: Any, video_id: str, path: Path) -> dict[str, Any]:
+    """Add the caption track (400 quota units); YouTube times a plain-text transcript to the audio itself."""
+    language = settings.podcast_language.split("-")[0]
+    media = MediaFileUpload(str(path), mimetype="application/octet-stream", resumable=False)
+    caption = youtube.captions().insert(
+        part="snippet",
+        body={"snippet": {"videoId": video_id, "language": language, "name": "", "isDraft": False}},
+        media_body=media,
+        sync=path.suffix.lower() == ".txt",
+    ).execute()
+    return {"caption_id": caption["id"], "language": language}
+
+
+def _add_to_playlist(youtube: Any, video_id: str, playlist_id: str) -> dict[str, Any]:
+    """Append the video to one of the channel's playlists (50 quota units)."""
+    body = {"snippet": {"playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}}
+    item = youtube.playlistItems().insert(part="snippet", body=body).execute()
+    return {"playlist_id": playlist_id, "playlist_item_id": item["id"]}
+
+
+def _after_upload(step: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Run a follow-up step on an already-published video, reporting a failure instead of raising it."""
+    try:
+        return {"status": "added", **step()}
+    except Exception as exc:  # the video is live; the agent retries this step by hand, never the upload
+        return {"status": "failed", "error": str(exc)}
+
+
 def upload_video_to_youtube(
     video_path: str,
     title: str,
@@ -231,11 +294,17 @@ def upload_video_to_youtube(
     notify_subscribers: bool = True,
     episode_slug: str | None = None,
     expect_short: bool = False,
+    captions_path: str | None = None,
+    playlist_id: str | None = None,
+    discovery_override: str | None = None,
 ) -> dict[str, Any]:
     """Upload a video with resumable 10 MB chunks and log it; return its id, URL, and final privacy status.
 
-    `episode_slug` credits the video's metrics to that episode. `expect_short` measures the
-    file first and refuses it, before anything is uploaded, unless YouTube will file it as a Short.
+    `episode_slug` credits the video's metrics to that episode, and its discovery brief is checked
+    (title, description hook, tags, chapters) before anything is uploaded, unless `discovery_override`
+    gives the human's reason. `expect_short` measures the file first and refuses it unless YouTube will
+    file it as a Short. After the upload, `captions_path` is added as the caption track and the video is
+    added to `playlist_id`; those two steps report failures in the result instead of raising.
     """
     file_path = Path(video_path).resolve()
     if not file_path.is_file():
@@ -244,6 +313,15 @@ def upload_video_to_youtube(
     if mimetype is None:
         raise ValueError(f"Unsupported video type {file_path.suffix!r}; allowed: {', '.join(VIDEO_CONTENT_TYPES)}")
     slug = validate_slug(episode_slug) if episode_slug else None
+    upload_tags = tags or settings.default_tags
+    _check_snippet_limits(title, description, upload_tags)
+    captions = _caption_file(captions_path) if captions_path else None
+    if playlist_id and not PLAYLIST_ID_RE.fullmatch(playlist_id):
+        raise ValueError(f"Invalid playlist id {playlist_id!r}.")
+    override = gate(
+        "youtube", slug, discovery_override,
+        lambda brief: check_youtube(brief, title, description, upload_tags, is_short=expect_short),
+    )
     measured: dict[str, Any] | None = None
     if expect_short:
         measured = measure_video(file_path)
@@ -255,12 +333,7 @@ def upload_video_to_youtube(
 
     youtube = get_authenticated_youtube_service()
     body = {
-        "snippet": {
-            "title": title[:MAX_TITLE_CHARS],
-            "description": description[:MAX_DESCRIPTION_CHARS],
-            "tags": tags or settings.default_tags,
-            "categoryId": category_id,
-        },
+        "snippet": {"title": title, "description": description, "tags": upload_tags, "categoryId": category_id},
         "status": {"privacyStatus": privacy_status, "selfDeclaredMadeForKids": False},
     }
 
@@ -296,8 +369,15 @@ def upload_video_to_youtube(
         # The Shorts feed only shows public videos, so an unlisted or private Short reaches nobody there.
         if result["privacy_status"] != "public":
             result["note"] = "Uploaded as a Short, but only public Shorts appear in the Shorts feed."
+    if override is not None:
+        result["discovery_override"] = override
 
-    # The video is already live here, so a log failure is reported, never raised (a retry would upload twice).
+    # The video is already live from here on: captions, playlist, and log failures are reported, never raised,
+    # because a retry would upload the video twice.
+    if captions:
+        result["captions"] = _after_upload(lambda: _insert_captions(youtube, response["id"], captions))
+    if playlist_id:
+        result["playlist"] = _after_upload(lambda: _add_to_playlist(youtube, response["id"], playlist_id))
     record = {"uploaded_at": datetime.now(UTC).isoformat(), **result}
     if log_error := append_record(settings.youtube_upload_log_path, record):
         result["log_error"] = log_error

@@ -9,6 +9,8 @@ import re
 # Slugs become filenames, R2 object keys, and URL path segments, so only
 # lowercase alphanumerics and hyphens are allowed (no dots, slashes, or spaces).
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# A chapter line: `- **06:40** — Title` (show notes) or `06:40 Title` / `1:02:03 - Title` (YouTube descriptions).
+_CHAPTER_LINE_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*)?(\d{1,2}:\d{2}(?::\d{2})?)(?:\*\*)?\s*(?:[—–:-]\s*)?(\S.*?)\s*$")
 
 
 def format_duration(seconds: float | None) -> str:
@@ -35,6 +37,15 @@ def parse_duration(value: str | None) -> float:
     except ValueError:
         return 0.0
     return total
+
+
+def parse_chapters(text: str) -> list[dict[str, float | str]]:
+    """Chapters (`seconds`, `title`) from lines that start with a timestamp, in the order they appear."""
+    return [
+        {"seconds": parse_duration(match.group(1)), "title": match.group(2)}
+        for line in text.splitlines()
+        if (match := _CHAPTER_LINE_RE.match(line))
+    ]
 
 
 def slugify(text: str) -> str:

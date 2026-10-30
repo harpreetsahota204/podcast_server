@@ -1,8 +1,9 @@
-"""Substack collector: views, opens, clicks, and growth on the posts this engine cross-posted.
+"""Substack collector: views, opens, clicks, and growth on the posts this engine made on Substack.
 
-Only posts in the engine's Substack log (`$DATA_DIR/social/substack_posts.jsonl`, written
-by `podcast_crosspost_to_substack`) are measured, so the publication's other posts stay
-out of the numbers. A logged draft counts once the human publishes it; drafts are skipped.
+Only posts in the engine's Substack logs are measured (`$DATA_DIR/social/substack_posts.jsonl`
+from `podcast_crosspost_to_substack`, and `substack_newsletters.jsonl` from
+`podcast_draft_newsletter`), so the publication's other posts stay out of the numbers.
+A logged draft counts once it's published; drafts are skipped.
 
 Substack has no stats API: the numbers come from the per-post `stats` its own dashboard
 uses, read through the private web API with the saved session cookie (the same path as
@@ -32,12 +33,12 @@ POST_METRICS = {"reaction_count": "reactions", "comment_count": "comments"}
 
 
 class SubstackCollector(Collector):
-    """Lifetime stats for every published post in the engine's Substack log."""
+    """Lifetime stats for every published post in the engine's Substack logs."""
 
     name = "substack"
-    description = "Views, email opens, clicks, and signups on posts cross-posted to Substack"
+    description = "Views, email opens, clicks, and signups on posts the engine cross-posted or sent on Substack"
     metrics = {
-        "views": MetricSpec("Substack views", "Web and app views of cross-posted posts", headline=True),
+        "views": MetricSpec("Substack views", "Web and app views of the engine's posts", headline=True),
         "opens": MetricSpec("Email opens", "Unique subscribers who opened the email"),
         "emails_delivered": MetricSpec("Emails delivered"),
         "clicks": MetricSpec("Email clicks"),
@@ -58,7 +59,9 @@ class SubstackCollector(Collector):
 
     def collect(self, ctx: CollectionContext) -> CollectionResult:
         """Snapshot today's stats for each logged post that's been published."""
-        log = [r for r in read_records(settings.substack_post_log_path) if r.get("draft_id")]
+        # A newsletter logs several events per draft; the id and slug maps below keep one entry each.
+        records = read_records(settings.substack_post_log_path) + read_records(settings.substack_newsletter_log_path)
+        log = [r for r in records if r.get("draft_id")]
         # A draft keeps its id when published; the slug (set by the engine) is the fallback match.
         logged_ids = {r["draft_id"]: r for r in log}
         logged_slugs = {r["slug"]: r for r in log if r.get("slug")}
@@ -91,5 +94,5 @@ class SubstackCollector(Collector):
                         "substack", metric, value, today, granularity="snapshot",
                         entity_type=POST, entity_id=post_id, episode_slug=episode,
                     ))
-        result.notes.append(f"{len(result.entities)} of {len(log)} logged posts are published and were read")
+        result.notes.append(f"{len(result.entities)} of {len(logged_ids)} logged posts are published and were read")
         return result

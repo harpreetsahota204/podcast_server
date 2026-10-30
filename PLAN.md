@@ -26,8 +26,11 @@ Podcast hosting services charge monthly for object storage, a database table, an
 | `core/storage.py` | Streaming multipart uploads/downloads; mirroring that records R2's actual byte length. |
 | `core/feed_generator.py` | Pure RSS XML generation. |
 | `core/site.py` | Publishes the feed (R2 or website repo), syncs episode pages, scoped git deploy. |
-| `core/doctor.py` | End-to-end setup check. |
-| `core/thumbnail.py` | Thumbnail art prompts and the style-file headline renderer (Pillow). |
+| `core/doctor.py` | End-to-end setup check (PASS / OFF / WARN / FAIL per integration). |
+| `core/discovery.py` | Discovery briefs (`$DATA_DIR/discovery/<slug>.json`), per-channel checks, and `gate`, which every publish path calls before anything goes public (refuses unless `discovery_override` gives a reason). |
+| `core/episode_assets.py` | Transcript, chapters (Podcasting 2.0 JSON from the show notes), and episode art for a new episode: validated before the audio upload, uploaded under timestamped keys. |
+| `core/capabilities.py` | The doctor's checks grouped by channel (`ready` / `off` / `needs_attention` / `broken`, with the tools for each) plus requests no tool handles; served as `podcast_capabilities`. |
+| `core/thumbnail.py` | Thumbnail art prompts and the style-file headline renderer (Pillow): 16:9 for YouTube, and square 2048 px episode art (crop, bottom fade, headline, wordmark) for the feed. |
 | `core/jsonl.py` | Append-only logs of public actions (X and Instagram posts, deletions and unpublishes, dev.to and Substack drafts, YouTube uploads, thumbnail changes). |
 | `core/credentials.py` | Credential files kept outside `.env` (Substack cookie, Instagram token): written 0600, checked by the doctor. |
 | `importers/` | `rss.py` (any host, GUID-preserving), `descript.py` (staging, chapters). |
@@ -61,9 +64,10 @@ CREATE TABLE episodes (
     audio_filename TEXT, audio_url TEXT, audio_op3_url TEXT,
     duration_seconds REAL, duration_formatted TEXT,
     file_size_bytes INTEGER,        -- always R2's stored length
-    explicit BOOLEAN, cover_image_url TEXT, tags TEXT,  -- tags: JSON list
+    explicit BOOLEAN, cover_image_url TEXT, tags TEXT,  -- tags: JSON list; cover = show art unless episode art was published
     audio_synced BOOLEAN,           -- audio confirmed in R2; unsynced episodes stay out of the feed
-    created_at TEXT, updated_at TEXT
+    created_at TEXT, updated_at TEXT,
+    transcript_url TEXT, transcript_type TEXT, chapters_url TEXT  -- added in place by init_schema; NULL for older episodes
 );
 CREATE TABLE excluded_episodes (guid TEXT PRIMARY KEY, slug TEXT UNIQUE NOT NULL, title TEXT);
 ```
@@ -100,16 +104,20 @@ CREATE TABLE collection_runs (id, source, started_at, finished_at, status, windo
 | :--- | :--- |
 | Storage, catalog, feed (RSS 2.0 + iTunes + Podcasting 2.0) | Done |
 | MCP server with human review gate, tool annotations, and connection instructions | Done |
+| Discovery at publish time: briefs, refusing checks for the feed, blog, YouTube, Instagram, and X; transcript, chapters, and episode art in the feed; YouTube captions and playlists; Instagram and X alt text; Substack SEO title (new content only) | Done |
+| Session alignment: connection rules for when the agent must ask (unresolved identifiers, ambiguity, unapproved public steps, bypassing a tool, scope creep) and `podcast_capabilities` to show what's ready | Done |
 | Episode edits, deploys, and background backups as MCP tools (no shell needed for routine work) | Done |
 | Site modes `none` / `astro`, scoped deploy | Done |
 | GUID-preserving RSS import + audio mirroring | Done |
 | Setup doctor, HF backups, exclusion list | Done |
 | Audience metrics: OP3 / Cloudflare / X / YouTube collectors, plugin contract, dashboard, MCP tools | Done |
 | YouTube thumbnails: prompt staging, style-file renderer, setter with change log + dashboard markers | Done |
+| Episode art: square icon from the thumbnail art (`podcast_render_episode_art`), published with the episode; optional `REQUIRE_EPISODE_IMAGE` | Done |
 | Dashboard: Overview plus a tab per platform, every collected metric (running totals as trends), Chart.js inlined offline, range and measured-stretch filters across every chart and table | Done |
 | Blog cross-posting to dev.to: unpublished drafts with canonical URL, log + duplicate check | Done |
 | Blog cross-posting to Substack: unpublished drafts via python-substack (private API), attribution line, https-only images, log + duplicate check | Done |
 | Metrics: dev.to and Substack collectors for cross-posted articles (from the cross-post logs) | Done |
+| Substack newsletters: original articles from `$DATA_DIR/newsletters/<slug>.md` drafted (discovery-checked, rewrites guarded against editor changes), then scheduled (cancellable) or sent at once with title confirmation; log, send-once guard, metrics | Done |
 | Instagram posting (Page token or Unified login token): single-image feed posts (JPEG conversion, R2 staging, container publish, log + duplicate check) | Done |
 | YouTube Shorts check: `expect_short` measures the clip (ffprobe, rotation-aware) and refuses non-Shorts before upload | Done |
 | Content management: list and remove one owned item per call (dry run, removal log) on Instagram (delete), YouTube (delete), dev.to (unpublish; no API delete), and Substack (delete, private API) | Done |

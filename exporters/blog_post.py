@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 import yaml
 
 from core.config import settings
+from core.discovery import check_blog, gate
 from core.formatting import one_line, validate_slug, yaml_str
 
 # A Markdown file that opens with a `---` frontmatter block, followed by the body.
@@ -27,6 +28,11 @@ def blog_post_path(slug: str) -> Path:
     return settings.site_blog_dir / f"{validate_slug(slug)}.md"
 
 
+def check_blog_discovery(slug: str, title: str, description: str, discovery_override: str | None = None) -> str | None:
+    """Refuse a blog title or meta description that misses the slug's discovery brief; return any override reason."""
+    return gate("blog", slug, discovery_override, lambda brief: check_blog(brief, title, description))
+
+
 def create_blog_post(
     title: str,
     description: str,
@@ -34,11 +40,15 @@ def create_blog_post(
     slug: str,
     tags: list[str] | None = None,
     draft: bool = False,
+    discovery_override: str | None = None,
 ) -> Path:
     """Write `<WEBSITE_BLOG_DIR>/<slug>.md` with title/description/tags/draft frontmatter.
 
-    Overwrites an existing file with the same slug. Returns the written path.
+    Refuses (ValueError) when the title or description misses the discovery brief, unless
+    `discovery_override` gives the human's reason. Overwrites an existing file with the same slug.
+    Returns the written path.
     """
+    check_blog_discovery(slug, title, description, discovery_override)
     output_path = blog_post_path(slug)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -58,9 +68,14 @@ def read_blog_post(slug: str) -> tuple[dict[str, Any], str]:
     path = blog_post_path(slug)
     if not path.is_file():
         raise FileNotFoundError(f"No blog post at {path}; write it with podcast_publish or podcast_create_blog first.")
+    return read_titled_markdown(path)
+
+
+def read_titled_markdown(path: Path) -> tuple[dict[str, Any], str]:
+    """Return the frontmatter and stripped body of a Markdown file whose frontmatter must include a title."""
     match = _FRONTMATTER_RE.match(path.read_text(encoding="utf-8"))
     frontmatter = yaml.safe_load(match.group(1)) if match else None
-    # A cross-post's title comes from the frontmatter, so a post without one can't go out.
+    # Cross-posts and newsletters take their title from the frontmatter, so a file without one can't go out.
     if not isinstance(frontmatter, dict) or not frontmatter.get("title"):
         raise ValueError(f"{path} needs a frontmatter block with a title.")
     return frontmatter, match.group(2).strip()

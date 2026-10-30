@@ -88,27 +88,33 @@ The MCP server runs over stdio. Point your agent at `bin/run-mcp.sh` in your che
 }
 ```
 
-Ask the agent to run `podcast_status`; it should report your show title and `r2_storage_ready: true`. Point it at [`AGENTS.md`](./AGENTS.md) (generic runbook and safety rules) and at your `$DATA_DIR/PLAYBOOK.md`. Fill in the playbook before your first episode: it's how the agent learns your voice, title formula, and review checklist.
+Ask the agent to run `podcast_status`; it should report your show title and `r2_storage_ready: true`. Then ask "what can you do for this show?": it calls `podcast_capabilities` and shows which channels are ready and which still need setup. The server tells every agent to ask you when a request is unclear rather than guess, so start sessions with what you want ("a blog post and an X post from last week's episode") and let it ask the rest. Point it at [`AGENTS.md`](./AGENTS.md) (generic runbook and safety rules) and at your `$DATA_DIR/PLAYBOOK.md`. Fill in the playbook before your first episode: it's how the agent learns your voice, title formula, and review checklist.
 
 ## Step 4: Publish and Submit (new shows)
 
-Ask the agent: *"Episode 1 is ready at `~/recordings/ep1.mp3`. Prep it."* It inspects the audio, drafts titles, show notes, and chapters, and stops for your approval. On approval it calls `podcast_publish`, which:
+Ask the agent: *"Episode 1 is ready at `~/recordings/ep1.mp3`. Prep it."* It inspects the audio, drafts titles, show notes, chapters, and a **discovery brief** (the search phrase and related phrases people would use to find the episode), and stops for your approval. On approval it saves the brief with `podcast_stage_discovery` and calls `podcast_publish`, which:
 
-1. Rejects the episode if its slug is invalid, already used, or excluded, **before** uploading anything.
-2. Measures the exact duration and byte length, then uploads the MP3 to R2.
+1. Rejects the episode if its slug is invalid, already used, or excluded, or if its title and summary miss the brief, **before** uploading anything.
+2. Measures the exact duration and byte length, then uploads the MP3 to R2, plus any transcript, chapters file, and episode art.
 3. Adds the episode to `catalog.db` with a new, permanent GUID.
 4. Regenerates the feed: uploaded to R2 in `none` mode, or written into your site and pushed in `astro` mode.
 
-No agent? Call the tool function directly:
+No agent? Call the tool functions directly:
 
 ```bash
 uv run python -c "
-from mcp_server.server import podcast_publish
-print(podcast_publish(audio_file_path='ep1.mp3', title='Episode 1: ...', description='One-line summary',
-                      show_notes_markdown='### Chapters\n\n- **00:00** — Intro', slug='episode-1'))"
+from mcp_server.server import podcast_publish, podcast_stage_discovery
+podcast_stage_discovery(slug='first-episode', primary_phrase='sim-to-real transfer',
+                        secondary_phrases=['domain randomization', 'robot learning', 'reality gap'],
+                        audience='Robotics engineers', question='Why do simulated policies fail on real robots?',
+                        entities=['Guest Name'])
+print(podcast_publish(audio_file_path='ep1.mp3', title='Sim-to-real transfer with Guest Name',
+                      description='Why the reality gap breaks sim-to-real transfer, and what closes it.',
+                      show_notes_markdown='### Chapters\n\n- **00:00** — Intro', slug='first-episode',
+                      transcript_path='ep1.vtt'))"
 ```
 
-Once the feed is live, submit `PODCAST_FEED_URL` once in **Apple Podcasts Connect** and **Spotify for Creators**. New episodes appear on their own after that.
+Once the feed is live, submit `PODCAST_FEED_URL` once in **Apple Podcasts Connect** and **Spotify for Creators**. New episodes appear on their own after that. To show your own transcripts in Apple Podcasts, set the show to display transcripts you provide in Podcasts Connect (one time); Apple reads `.vtt` or `.srt` files.
 
 ## Step 5: Migrating From Another Host
 
@@ -142,7 +148,7 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
    uv run --with google-auth-oauthlib python -c "
    from google_auth_oauthlib.flow import InstalledAppFlow
    scopes = ['https://www.googleapis.com/auth/youtube.upload',
-             'https://www.googleapis.com/auth/youtube.force-ssl',         # thumbnails and deleting videos
+             'https://www.googleapis.com/auth/youtube.force-ssl',         # thumbnails, captions, playlists, deleting videos
              'https://www.googleapis.com/auth/youtube.readonly',          # metrics: lifetime counts
              'https://www.googleapis.com/auth/yt-analytics.readonly']     # metrics: daily views, watch time
    flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', scopes)
@@ -185,6 +191,12 @@ Every podcast host publishes RSS, so the importer works with any of them. The ru
 1. **Session cookie.** In a browser signed in to Substack, open DevTools → Application → Cookies → `https://substack.com` and copy the value of `substack.sid` (or `connect.sid`). Then run `uv run python -m exporters.substack_post login` and paste it at the hidden prompt. It's saved to `SUBSTACK_COOKIES_PATH` (default `~/.config/podcast_server/substack_cookies.json`, mode 600), never to `.env`, and the command prints your publication's URL.
 2. **Engine settings.** In `.env`: `SUBSTACK_PUBLICATION_URL=https://myshow.substack.com` (or your custom domain). `uv run python -m core.doctor` confirms the cookie signs in.
 3. **Try it.** After a blog post is live on your site, ask your agent for `podcast_crosspost_to_substack(blog_slug=..., dry_run=true)`, then without `dry_run`. Substack can't set a canonical URL, so each draft opens with "Originally published at" and a link to your post. Images must be web (https) URLs. Tables and raw HTML don't survive Substack's editor; the tool lists them as `warnings` so you can fix the draft. Drafts are logged to `$DATA_DIR/social/substack_posts.jsonl`, and calling it again for the same post returns the existing draft.
+
+**Newsletters on Substack** (`podcast_draft_newsletter`, `podcast_send_newsletter`, `podcast_unschedule_newsletter`; same cookie and `SUBSTACK_PUBLICATION_URL` as above, no website needed): original articles you send to subscribers, not copies of blog posts.
+1. **Write it.** Put the article in `$DATA_DIR/newsletters/<slug>.md` with `title`, `subtitle` (the email preview), and `tags` frontmatter, plus optional `seo_title`, `seo_description` (the search snippet, 50-160 characters; default the subtitle), and `cover_image` (the post thumbnail and social preview; Substack suggests 1456x1048 or at least 1200x630), and stage a discovery brief for the slug (or give your agent a reason to skip the check).
+2. **Add media (optional).** `podcast_make_gif` turns a few seconds of a demo video into an email-sized GIF, `podcast_render_newsletter_preview` renders the post preview (1456x1048) in your thumbnail style, and `podcast_upload_media_asset` hosts images for the body.
+3. **Draft it.** Your agent runs `podcast_draft_newsletter(slug=...)`, which creates an unpublished draft and returns its editor link. Edit the file and run it again to update the draft. Opening the draft in Substack doesn't block that; if you changed its words there, it refuses, and `podcast_pull_newsletter` copies your edits into the file first.
+4. **Send it.** `podcast_send_newsletter(slug=..., confirm_title="<exact title>", send_at="2026-11-03T09:00:00-05:00")` schedules it, and `podcast_unschedule_newsletter` cancels until then. Leave out `send_at` to publish at once. Subscribers are emailed unless you pass `send_email=false` (web only). Every step is logged to `$DATA_DIR/social/substack_newsletters.jsonl`, and a sent newsletter is never sent again.
 
 **Episodes on Substack** need no engine changes: in Substack, open Podcast → *I have a podcast hosted elsewhere* → *Distribute to Substack*, paste your feed URL, and turn auto-publish off so each new episode arrives as a draft. Substack plays the audio from your bucket, so your downloads and analytics stay where they are.
 
@@ -231,18 +243,23 @@ To add a source (YouTube, a hosting platform's CSV export, a newsletter), subcla
 | Rebuild the feed (and pages) | `podcast_rebuild_feed` tool, or `uv run python -m core.site` |
 | Back up | Set `HF_BACKUP_REPO`, run `hf auth login` once, then call the `podcast_backup` tool (or run `uv run python scripts/backup_to_hf.py`) after each publish. It mirrors every MP3, a catalog snapshot, and your show assets to a **private** Hugging Face dataset, uploading only what changed. |
 | Re-check setup | `uv run python -m core.doctor` |
+| Make new content findable | Agent: drafts a discovery brief with the release package → your approval → `podcast_stage_discovery`; every publish tool then checks its fields against it and refuses a miss (`discovery_override` with your reason skips one check) |
+| See what the agent can do right now | Agent: `podcast_capabilities` (each channel ready, off, or broken, with the reason, plus what needs you) |
 | Cross-post the blog | Agent: `podcast_crosspost_to_devto` and `podcast_crosspost_to_substack` once the post is live → you publish each draft on its platform |
+| Send a Substack newsletter | Agent: writes `$DATA_DIR/newsletters/<slug>.md` with you (plus a preview image and any GIFs) → `podcast_draft_newsletter` → you review the draft (edit in Substack if you like; the agent pulls your edits back with `podcast_pull_newsletter`) → `podcast_send_newsletter` with `send_at` (or now, if you ask), first with `dry_run=true` |
 | Post to Instagram | Agent: your approval of the exact image and caption → `podcast_post_to_instagram` |
 | Remove a post or video | Agent: the platform's `podcast_list_*` tool → you name the item → `podcast_delete_instagram_post`, `podcast_delete_youtube_video`, `podcast_delete_substack_post` (permanent), or `podcast_unpublish_devto_article` (back to draft), first with `dry_run=true` → your approval → the same without `dry_run`. |
 | Instagram says the token is invalid | Get a new long-lived user token (Posting to Instagram, step 3), then `uv run python -m exporters.instagram login` |
 | Substack says the cookie expired | `uv run python -m exporters.substack_post login` with a fresh cookie value |
 | Make a YouTube thumbnail | Agent: `podcast_stage_thumbnail` → renders the art → `podcast_render_thumbnail` → your approval → `podcast_set_youtube_thumbnail` |
+| Give an episode its own icon in podcast apps | Agent: from the same art and headline, `podcast_render_episode_art` → your approval → `podcast_publish(..., episode_image_path=...)`. Set `REQUIRE_EPISODE_IMAGE=true` to make it mandatory |
 | Check audience numbers | Agent: `podcast_metrics_summary`; or open `$DATA_DIR/metrics/dashboard.html` (refreshed by the daily `bin/collect-metrics.sh`) |
 
 ## Customizing
 
 - **Editorial voice and workflows:** `DATA_DIR/PLAYBOOK.md` (template in `examples/show-data/`). Agents follow it for titles, show notes, and review.
 - **YouTube thumbnails:** put `thumbnail_style.json` (and your font files) in `DATA_DIR/templates/` to set fonts, colors, the fade behind the text, and the text box; see `examples/show-data/templates/thumbnail_style.json`. Fonts must allow embedding (e.g. SIL Open Font License faces from Google Fonts). Without the file, a plain built-in font is used. Set `THUMBNAIL_STYLE` in `.env` for the art prompt's visual style. YouTube's custom thumbnails must be enabled on the channel (phone-verified accounts).
+- **Episode art:** the same style file drives the square episode icon. Set `"wordmark"` to the short show name to print at the bottom (default: `PODCAST_TITLE`; `""` for none). Apple and Spotify want square art of 1400-3000 px and only refetch an image whose URL changes, which the engine handles by uploading under a new key.
 - **Social posts:** put `social_long.txt` / `social_short.txt` in `DATA_DIR/templates/` using `{hook}`, `{specs}`, `{guest_name}`, `{link}`, `{title}` (double literal braces: `{{ }}`).
 - **Site layout (astro mode):** `WEBSITE_RSS_FILE`, `WEBSITE_EPISODES_DIR`, `WEBSITE_BLOG_DIR`, `WEBSITE_BRANCH`. Episode pages use this frontmatter; add a matching collection schema to your site:
 

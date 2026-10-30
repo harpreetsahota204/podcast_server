@@ -21,7 +21,19 @@ from unittest import mock
 from PIL import Image
 
 from core.config import settings
-from core.thumbnail import MAX_THUMBNAIL_BYTES, THUMB_SIZE, ThumbnailStyle, generate_youtube_thumbnail, load_style, render_thumbnail
+from core.thumbnail import (
+    EPISODE_ART_PX,
+    MAX_THUMBNAIL_BYTES,
+    NEWSLETTER_PREVIEW_SIZE,
+    THUMB_SIZE,
+    ThumbnailStyle,
+    generate_youtube_thumbnail,
+    load_style,
+    render_episode_art,
+    render_newsletter_preview,
+    render_thumbnail,
+    square_crop_box,
+)
 
 
 class ThumbnailTestCase(unittest.TestCase):
@@ -81,6 +93,31 @@ class RenderTests(ThumbnailTestCase):
         self.assertLessEqual(result["file_size_bytes"], MAX_THUMBNAIL_BYTES)
         self.assertFalse((self.tmp / "noisy-final.png").exists())
 
+    def test_newsletter_preview_is_14_by_10_with_text_inside_the_social_crop(self) -> None:
+        """1456x1048 output; every text pixel sits inside the band a centered 1200x630 crop keeps."""
+        settings.templates_dir.mkdir()
+        (settings.templates_dir / "thumbnail_style.json").write_text(json.dumps({"scrim_opacity": 0}))
+        result = render_newsletter_preview(self.base, ["Robot hands", "can't feel"], self.tmp / "p.png", label="TOUCH")
+        with Image.open(result["path"]) as image:
+            self.assertEqual(image.size, NEWSLETTER_PREVIEW_SIZE)
+            _, top, _, bottom = image.convert("L").getbbox()
+        width, height = NEWSLETTER_PREVIEW_SIZE
+        kept = width * 630 / 1200
+        self.assertGreaterEqual(top, (height - kept) / 2)
+        self.assertLessEqual(bottom, (height + kept) / 2)
+
+    def test_mirror_and_focus_choose_what_the_crop_keeps(self) -> None:
+        """mirror flips the art; focus picks which part of a wide image survives the crop."""
+        wide = self.tmp / "wide.png"
+        image = Image.new("RGB", (2000, 500), "black")
+        image.paste((255, 0, 0), (0, 0, 500, 500))
+        image.save(wide)
+        plain = ThumbnailStyle(scrim_opacity=0)
+        for mirror, focus, expect_red_left in ((False, (0.0, 0.5), True), (True, (0.0, 0.5), False)):
+            out = render_thumbnail(wide, ["X"], self.tmp / f"m{mirror}.png", style=plain, mirror=mirror, focus=focus)
+            with Image.open(out["path"]) as rendered, self.subTest(mirror=mirror):
+                self.assertEqual(rendered.getpixel((5, 5)) == (255, 0, 0), expect_red_left)
+
     def test_bad_inputs_are_refused(self) -> None:
         """Writing over the art, or an empty or too-long headline, fails before drawing."""
         with self.assertRaises(ValueError):
@@ -105,6 +142,88 @@ class RenderTests(ThumbnailTestCase):
         self.assertIn("right 40%", staged["prompt"])
         self.assertIn("no text", staged["prompt"])
         self.assertEqual(staged["local_path"], str(settings.thumbnails_dir / "ep-art.png"))
+
+
+class EpisodeArtTests(ThumbnailTestCase):
+    """Square episode art for podcast apps, from the same art and style as the thumbnail."""
+
+    def setUp(self) -> None:
+        """Add 2:1 art, like the thumbnail prompt produces."""
+        super().setUp()
+        self.wide = self.tmp / "wide-art.png"
+        Image.new("RGB", (3072, 1536), (60, 40, 20)).save(self.wide)
+
+    def test_square_crop_follows_focus_and_stays_inside(self) -> None:
+        """A 2:1 image crops to its height; focus moves the square; extremes clamp to the edges."""
+        self.assertEqual(square_crop_box(3072, 1536, 0.5), (768, 0, 2304, 1536))
+        self.assertEqual(square_crop_box(3072, 1536, 0.0), (0, 0, 1536, 1536))
+        self.assertEqual(square_crop_box(3072, 1536, 1.0), (1536, 0, 3072, 1536))
+        self.assertEqual(square_crop_box(1000, 1200, 0.33), (0, 100, 1000, 1100))
+
+    def test_output_is_what_podcast_publish_accepts(self) -> None:
+        """A 2048 px square RGB JPEG, with the headline uppercased like the thumbnail."""
+        result = render_episode_art(self.wide, ["Models", "break"], self.tmp / "ep-episode.jpg", label="GUEST")
+        with Image.open(result["path"]) as image:
+            self.assertEqual((image.size, image.mode, image.format), ((EPISODE_ART_PX, EPISODE_ART_PX), "RGB", "JPEG"))
+        self.assertEqual(result["lines"], ["MODELS", "BREAK"])
+
+    def test_wordmark_defaults_to_the_show_title_and_can_be_turned_off(self) -> None:
+        """Without a style wordmark the show title is drawn at the bottom; an empty one leaves that area untouched."""
+        # The wordmark band: just above the bottom margin, on the left.
+        margin = round(0.065 * EPISODE_ART_PX)
+        bottom = (margin, EPISODE_ART_PX - margin - 60, EPISODE_ART_PX // 2, EPISODE_ART_PX - margin)
+        crops = []
+        for name, style in (("default", ThumbnailStyle()), ("none", ThumbnailStyle(wordmark=""))):
+            path = render_episode_art(self.wide, ["X"], self.tmp / f"{name}.jpg", style=style)["path"]
+            with Image.open(path) as image:
+                crops.append(image.crop(bottom).convert("L").getextrema()[1])
+        self.assertGreater(crops[0], crops[1] + 50)
+
+    def test_bad_inputs_are_refused(self) -> None:
+        """Writing over the art, a focus outside 0-1, or an empty headline fails before drawing."""
+        with self.assertRaises(ValueError):
+            render_episode_art(self.wide, ["X"], self.wide)
+        with self.assertRaises(ValueError):
+            render_episode_art(self.wide, ["X"], self.tmp / "o.jpg", focus_x=1.5)
+        with self.assertRaises(ValueError):
+            render_episode_art(self.wide, ["  "], self.tmp / "o.jpg")
+
+
+class GifTests(ThumbnailTestCase):
+    """Email-sized GIFs from video clips; ffmpeg runs for real when it's installed."""
+
+    def test_refuses_bad_inputs_before_running_ffmpeg(self) -> None:
+        """A missing video or an out-of-range clip fails without calling ffmpeg."""
+        from core.gif import make_gif
+
+        with mock.patch("core.gif.subprocess.run") as run:
+            with self.assertRaises(FileNotFoundError):
+                make_gif(self.tmp / "missing.mp4", "clip")
+            for start, duration in ((0, 0), (0, 31), (-1, 5)):
+                with self.subTest(start=start, duration=duration), self.assertRaises(ValueError):
+                    make_gif(self.base, "clip", start_seconds=start, duration_seconds=duration)
+        run.assert_not_called()
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+    def test_steps_down_until_the_gif_fits_the_budget(self) -> None:
+        """A clip that's too big at 640 px is retried smaller; the result is under the budget and not upscaled."""
+        import subprocess
+
+        from core.gif import make_gif
+
+        # ffmpeg's moving test pattern: about 0.56 MB as a GIF at 640 px and 12 fps, 0.26 MB at 480 px and 8 fps.
+        video = self.tmp / "pattern.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=800x450:d=2", "-pix_fmt", "yuv420p", str(video)],
+            check=True,
+        )
+        result = make_gif(video, "pattern", duration_seconds=2, max_mb=0.3)
+        self.assertLessEqual(result["file_size_bytes"], 0.3 * 1024 * 1024)
+        self.assertLess(result["max_width"], 640)
+        self.assertEqual(Path(result["path"]), settings.media_dir / "pattern.gif")
+        with self.assertRaises(ValueError):
+            make_gif(video, "pattern", duration_seconds=2, max_mb=0.01)
+        self.assertFalse((settings.media_dir / "pattern.gif").exists())
 
 
 class SetThumbnailTests(ThumbnailTestCase):

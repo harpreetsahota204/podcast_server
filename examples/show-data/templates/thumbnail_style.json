@@ -10,5 +10,6 @@
   "text_box": [0.57, 0.14, 0.95, 0.78],
   "line_spacing": 0.04,
   "label_ratio": 0.2,
-  "uppercase": true
+  "uppercase": true,
+  "wordmark": "MY SHOW"
 }

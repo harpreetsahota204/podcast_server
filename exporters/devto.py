@@ -149,11 +149,17 @@ def _find_existing_draft(slug: str, canonical_url: str) -> dict[str, Any] | None
     return None
 
 
-def crosspost_to_devto(slug: str, tags: list[str] | None = None, dry_run: bool = False) -> dict[str, Any]:
-    """Create an unpublished dev.to draft of the website's blog post `slug`, with a canonical URL back to it.
+def crosspost_to_devto(
+    slug: str,
+    tags: list[str] | None = None,
+    dry_run: bool = False,
+    publish: bool = False,
+) -> dict[str, Any]:
+    """Create a dev.to article for the website's blog post `slug`, with a canonical URL back to it.
 
+    If `publish` is True, publishes immediately; otherwise creates an unpublished draft.
     Every check runs before the first request. `dry_run` reports what would be sent
-    without calling dev.to. If a draft of this post already exists, it's returned
+    without calling dev.to. If an article/draft for this post already exists, it's returned
     instead of creating another, so calling again is always safe.
     """
     # 1. Local checks: the post and its publish state, the tags, and the configuration.
@@ -161,7 +167,7 @@ def crosspost_to_devto(slug: str, tags: list[str] | None = None, dry_run: bool =
     article_tags = validate_tags(tags)
     _api_key()
 
-    # 2. The article as dev.to receives it: never published.
+    # 2. The article as dev.to receives it.
     article = {
         "title": source.title,
         "description": source.description,
@@ -169,23 +175,29 @@ def crosspost_to_devto(slug: str, tags: list[str] | None = None, dry_run: bool =
         # A JSON list: dev.to silently drops tags sent as the comma-separated string its docs describe.
         "tags": article_tags,
         "canonical_url": source.canonical_url,
-        "published": False,
+        "published": bool(publish),
     }
     summary = {"slug": slug, "title": source.title, "canonical_url": source.canonical_url, "tags": article_tags}
     if dry_run:
-        return {"status": "dry_run", **summary, "body_chars": len(source.body_markdown)}
+        return {"status": "dry_run", **summary, "body_chars": len(source.body_markdown), "published": bool(publish)}
 
     # 3. Reuse an existing draft rather than creating a second one.
     if existing := _find_existing_draft(slug, source.canonical_url):
         return {"status": "exists", **summary, **existing, "dashboard_url": DASHBOARD_URL}
 
     created = create_article(article)
-    record = {"created_at": datetime.now(UTC).isoformat(), **summary, "article_id": created["id"], "url": created["url"]}
+    record = {
+        "created_at": datetime.now(UTC).isoformat(),
+        **summary,
+        "published": bool(publish),
+        "article_id": created["id"],
+        "url": created["url"],
+    }
     result: dict[str, Any] = {
-        "status": "draft_created",
+        "status": "published" if publish else "draft_created",
         **record,
         "dashboard_url": DASHBOARD_URL,
-        "next_step": "Review the draft on dev.to and publish it there.",
+        "next_step": "Article is live on dev.to." if publish else "Review the draft on dev.to and publish it there.",
     }
     # The draft already exists on dev.to here. A log failure must not raise, or a retry would look like a new post.
     if log_error := append_record(settings.devto_post_log_path, record):

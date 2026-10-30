@@ -38,6 +38,7 @@ editorial voice and process, and it never belongs in the engine repository.
 Before asking for approval, the agent presents:
 - [ ] <N> title options
 - [ ] Summary and chapters
+- [ ] Discovery brief (primary phrase, 3-5 secondary phrases, audience, question, entities) next to each channel's fields
 - [ ] <Companion post outline, social drafts, thumbnail prompt, ...>
 
 Never publish without explicit approval.
@@ -61,6 +62,13 @@ Never publish without explicit approval.
 - **Blog cross-posting:** <which platforms companion posts go to (dev.to, Substack), the 4 dev.to tags to use (lowercase letters and digits only), whether Substack drafts are emailed to subscribers>. Flow: blog post live on the site → podcast_crosspost_to_devto / podcast_crosspost_to_substack → human publishes each draft on its platform.
 - **Video:** <YouTube privacy default, description format, chapters; always pass episode_slug to podcast_publish_to_youtube>
 - **Thumbnails:** <art style (also THUMBNAIL_STYLE in .env), headline rules (word count, tone), label format>. Fonts, colors, and layout go in templates/thumbnail_style.json. Flow: podcast_stage_thumbnail → agent renders art → podcast_render_thumbnail → approval → podcast_set_youtube_thumbnail.
+- **Episode art:** <whether every episode gets its own icon (set REQUIRE_EPISODE_IMAGE=true to enforce), the wordmark in templates/thumbnail_style.json>. Flow: same art and headline → podcast_render_episode_art → approval → podcast_publish(episode_image_path=...).
+- **Discovery:** the engine refuses fields that miss the brief (saved with podcast_stage_discovery); these choices are yours:
+  - **Search phrases:** <how your audience searches, e.g. the problem they type rather than your show's jargon; phrases to avoid>
+  - **YouTube hook:** <formula for the first 150 characters of the description, e.g. guest + mechanism + tension>; default playlist ids for podcast_publish_to_youtube
+  - **Instagram:** <hashtag policy, e.g. 3-5 specific ones>; what goes in the first 125 characters of a caption
+  - **Alt text:** <style for thumbnails and clips, e.g. what the image shows, then the episode topic>
+  - **Transcripts:** <where timestamped .vtt/.srt transcripts come from (your editor's export)>
 - **Metrics:** <which numbers matter for this show, review cadence (e.g. 7 days after each release)>; agents read them with podcast_metrics_summary / podcast_episode_metrics.
 
 ## 8. Deployment
@@ -69,5 +77,7 @@ Infrastructure details (DNS, R2, website wiring, backups, credentials) live in `
 
 ## 9. Show-Specific Rules
 
+- <Where each platform's ids map to episodes, so agents resolve links exactly, e.g. "YouTube video ids → youtube_videos.json and social/youtube_uploads.jsonl; no match means ask">
+- <Extra moments the agent must stop and ask you, beyond the engine's rules in AGENTS.md §1>
 - <e.g. episodes that must never be republished: listed in excluded_episodes.json>
 - <anything else agents must never do for this show>

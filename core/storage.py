@@ -4,6 +4,7 @@ Uploads use boto3's managed transfer, which streams in multipart chunks with
 retries instead of loading whole files into memory.
 """
 
+import io
 import logging
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -96,6 +97,11 @@ class R2StorageClient:
             ExtraArgs={"ContentType": content_type, "CacheControl": cache_control},
             Config=_TRANSFER_CONFIG,
         )
+        return self.public_url(key)
+
+    def upload_bytes(self, data: bytes, key: str, content_type: str) -> str:
+        """Upload generated content (e.g. a chapters file) with immutable caching; return its public URL."""
+        self._upload_stream(io.BytesIO(data), key, content_type)
         return self.public_url(key)
 
     def download_file(self, key: str, local_path: Path) -> None:

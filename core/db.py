@@ -19,6 +19,9 @@ class CatalogDB:
     # Editorial columns that may change after release. guid and slug are absent because podcast
     # apps key listening state on them; audio columns are absent because published R2 objects are immutable.
     EDITABLE_FIELDS = frozenset({"title", "summary", "content_markdown", "tags", "episode_number", "season", "explicit"})
+    # Columns added after the first release; init_schema adds any that an older catalog lacks.
+    # Nullable, so existing episodes keep exactly the feed entries they had.
+    ADDED_COLUMNS = {"transcript_url": "TEXT", "transcript_type": "TEXT", "chapters_url": "TEXT"}
 
     def __init__(self, db_path: Path, excluded_file: Path | None = None) -> None:
         """Open (creating if needed) the catalog at `db_path`, ensure the schema, and load exclusions.
@@ -80,6 +83,11 @@ class CatalogDB:
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            existing = {row["name"] for row in self.conn.execute("PRAGMA table_info(episodes)")}
+            for column, kind in self.ADDED_COLUMNS.items():
+                if column not in existing:
+                    # Names and types come from the class constant above, never from input.
+                    self.conn.execute(f"ALTER TABLE episodes ADD COLUMN {column} {kind}")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_published ON episodes(published_at DESC);")
             # content_html is only the original import from a previous host. Once anyone (including
             # agents writing raw SQL) edits the Markdown notes, the HTML is stale and

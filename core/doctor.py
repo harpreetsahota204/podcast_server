@@ -3,7 +3,9 @@
 Usage:
     uv run python -m core.doctor
 
-Each check prints PASS, WARN, or FAIL with the fix. Exit code 1 if anything failed.
+Each check prints PASS, OFF (an optional integration not set up), WARN, or FAIL with the
+fix. Exit code 1 if anything failed. `core.capabilities` groups the same checks by channel
+for agents.
 Settings themselves are validated on import, so a missing required variable
 fails before this module runs, with pydantic listing exactly which ones.
 """
@@ -109,7 +111,6 @@ def check_optional() -> Check:
         name
         for name, on in [
             ("Descript", bool(settings.descript_api_bearer or settings.descript_api_key)),
-            ("YouTube", settings.youtube_token_path.exists()),
             ("HF backup", bool(settings.hf_backup_repo)),
             ("OP3 analytics", settings.use_op3_prefix),
         ]
@@ -118,10 +119,17 @@ def check_optional() -> Check:
     return "PASS", f"enabled: {', '.join(enabled) or 'none'}"
 
 
+def check_youtube() -> Check:
+    """YouTube uploads are off until the OAuth token file exists (the token itself is checked on first use)."""
+    if not settings.youtube_token_path.exists():
+        return "OFF", f"no token at {settings.youtube_token_path} (run the YouTube OAuth step in ADOPTING.md)"
+    return "PASS", f"token at {settings.youtube_token_path}"
+
+
 def check_x_posting() -> Check:
     """X posting is off, or xurl resolves for X_USERNAME (the login itself is checked with `xurl whoami`)."""
     if not settings.x_username:
-        return "PASS", "off (set X_USERNAME and log in with xurl to enable)"
+        return "OFF", "set X_USERNAME and log in with xurl to enable"
     try:
         command = xurl_command()
     except XPostError as e:
@@ -132,7 +140,7 @@ def check_x_posting() -> Check:
 def check_instagram() -> Check:
     """Instagram posting is off, or the saved token is private, belongs to INSTAGRAM_USERNAME, and still works."""
     if not settings.instagram_username:
-        return "PASS", "off (set INSTAGRAM_USERNAME and run `python -m exporters.instagram login`)"
+        return "OFF", "set INSTAGRAM_USERNAME and run `python -m exporters.instagram login`"
     token_file = settings.instagram_token_path.expanduser()
     # The token controls the whole Instagram account, so a file others can read is a failure, not a warning.
     if readable_by_others(token_file):
@@ -148,7 +156,7 @@ def check_instagram() -> Check:
 def check_devto() -> Check:
     """dev.to cross-posting is off, or the API key works and drafts get a canonical URL."""
     if not settings.devto_api_key:
-        return "PASS", "off (set DEVTO_API_KEY and BLOG_URL_TEMPLATE to enable)"
+        return "OFF", "set DEVTO_API_KEY and BLOG_URL_TEMPLATE to enable"
     if not settings.blog_url_template:
         return "WARN", "DEVTO_API_KEY is set but BLOG_URL_TEMPLATE isn't; cross-posting refuses without a canonical URL."
     try:
@@ -161,7 +169,7 @@ def check_devto() -> Check:
 def check_substack() -> Check:
     """Substack drafts are off, or the saved session cookie is private and still signs in."""
     if not settings.substack_publication_url:
-        return "PASS", "off (set SUBSTACK_PUBLICATION_URL and run `python -m exporters.substack_post login`)"
+        return "OFF", "set SUBSTACK_PUBLICATION_URL and run `python -m exporters.substack_post login`"
     if not settings.blog_url_template:
         return "WARN", "SUBSTACK_PUBLICATION_URL is set but BLOG_URL_TEMPLATE isn't; cross-posting refuses without it."
     cookies = settings.substack_cookies_path.expanduser()
@@ -201,6 +209,7 @@ CHECKS: list[tuple[str, Callable[[], Check]]] = [
     ("Cover art", check_artwork),
     ("Feed URL", check_feed_url),
     ("Optional integrations", check_optional),
+    ("YouTube", check_youtube),
     ("X posting", check_x_posting),
     ("Instagram posting", check_instagram),
     ("dev.to cross-posting", check_devto),
@@ -209,16 +218,20 @@ CHECKS: list[tuple[str, Callable[[], Check]]] = [
 ]
 
 
+def run_check(check: Callable[[], Check]) -> Check:
+    """Run one check, turning a crash into a FAIL: a checker must report problems, not raise them (e.g. a malformed R2 account id)."""
+    try:
+        return check()
+    except Exception as e:
+        return "FAIL", f"{type(e).__name__}: {e}"
+
+
 def main() -> int:
     """Run every check, print a report, and return the process exit code."""
     print(f"Show: {settings.podcast_title}  (SITE_MODE={settings.site_mode}, data: {settings.data_dir})\n")
     failed = False
     for name, check in CHECKS:
-        # A checker must report problems, not crash on them (e.g. a malformed R2 account id).
-        try:
-            status, detail = check()
-        except Exception as e:
-            status, detail = "FAIL", f"{type(e).__name__}: {e}"
+        status, detail = run_check(check)
         failed |= status == "FAIL"
         print(f"  [{status}] {name}: {detail}")
     print("\nReady to publish." if not failed else "\nFix the FAIL items above, then re-run.")

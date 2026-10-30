@@ -18,6 +18,8 @@ ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 CONTENT_NS = "http://purl.org/rss/1.0/modules/content/"
 ATOM_NS = "http://www.w3.org/2005/Atom"
 PODCAST_NS = "https://podcastindex.org/namespace/1.0"
+# Podcasting 2.0 JSON chapters (https://github.com/Podcastindex-org/podcast-namespace/blob/main/chapters/jsonChapters.md).
+CHAPTERS_MIME = "application/json+chapters"
 
 # Without registration ElementTree emits `ns0:`/`ns1:` prefixes; many podcast
 # apps string-match on the conventional `itunes:` prefix instead of resolving namespaces.
@@ -123,6 +125,19 @@ def _add_item(channel: ET.Element, ep: dict[str, Any]) -> None:
     show_notes = _show_notes_html(ep)
     if show_notes:
         ET.SubElement(item, f"{{{CONTENT_NS}}}encoded").text = show_notes
+
+    # Discovery extras, set only on episodes published with them: Apple shows (and searches)
+    # transcripts it gets from this tag, and apps render chapters and episode art.
+    if ep.get("transcript_url"):
+        ET.SubElement(
+            item,
+            f"{{{PODCAST_NS}}}transcript",
+            {"url": ep["transcript_url"], "type": ep["transcript_type"], "language": settings.podcast_language},
+        )
+    if ep.get("chapters_url"):
+        ET.SubElement(item, f"{{{PODCAST_NS}}}chapters", {"url": ep["chapters_url"], "type": CHAPTERS_MIME})
+    if ep.get("cover_image_url") and ep["cover_image_url"] != settings.podcast_image_url:
+        ET.SubElement(item, _itunes("image"), {"href": ep["cover_image_url"]})
 
 
 def build_rss_xml(episodes: list[dict[str, Any]]) -> str:

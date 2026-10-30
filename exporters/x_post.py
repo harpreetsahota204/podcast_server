@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import settings
+from core.discovery import clean_alt_text, override_reason
 from core.formatting import validate_slug
 from core.jsonl import append_record, read_records
 from core.media_uploader import MEDIA_CONTENT_TYPES
@@ -100,6 +101,12 @@ def upload_media(media_path: Path) -> str:
     return id_from_payload(run_xurl(["media", "upload", str(media_path)]))
 
 
+def set_alt_text(media_id: str, alt_text: str) -> None:
+    """Attach alt text to uploaded media; X only accepts it before the post that uses the media."""
+    body = {"id": media_id, "metadata": {"alt_text": {"text": alt_text}}}
+    run_xurl(["-X", "POST", "/2/media/metadata", "-d", json.dumps(body)])
+
+
 def publish_post(text: str, media_id: str | None = None) -> str:
     """Publish `text`, attaching the uploaded media when there is one, and return the post id."""
     media_flags = ["--media-id", media_id] if media_id else []
@@ -133,18 +140,31 @@ def read_post_log() -> list[dict[str, Any]]:
 
 
 def post_to_x(
-    text: str, media_path: str | None = None, dry_run: bool = False, episode_slug: str | None = None
+    text: str,
+    media_path: str | None = None,
+    dry_run: bool = False,
+    episode_slug: str | None = None,
+    alt_text: str | None = None,
+    discovery_override: str | None = None,
 ) -> dict[str, Any]:
     """Post `text` (plus optional media) as the configured account and record it in the post log.
 
-    Every check runs before the upload, so a rejected call posts nothing. `dry_run`
-    runs the same checks and reports what would be sent without calling X.
+    Every check runs before the upload, so a rejected call posts nothing. Attached media needs
+    `alt_text` (search and screen readers use it) unless `discovery_override` gives the human's
+    reason. `dry_run` runs the same checks and reports what would be sent without calling X.
     `episode_slug` credits the post's metrics to that episode.
     """
     body = text.strip()
     if not body:
         raise ValueError("Post text is empty.")
     media = _resolve_media(media_path)
+    alt = clean_alt_text(alt_text)
+    override = override_reason(discovery_override)
+    if media and not alt and override is None:
+        raise ValueError(
+            "Attached media needs alt_text; nothing was posted. "
+            "Add it, or pass discovery_override with the human's reason for skipping."
+        )
     xurl_command()  # fail on missing configuration before anything is uploaded
 
     summary = {
@@ -152,12 +172,18 @@ def post_to_x(
         "chars": len(body),
         "media_file": media.name if media else None,
         "media_type": MEDIA_CONTENT_TYPES[media.suffix.lower()] if media else None,
+        "alt_text_chars": len(alt or ""),
         "episode_slug": validate_slug(episode_slug) if episode_slug else None,
     }
+    if override is not None:
+        summary["discovery_override"] = override
     if dry_run:
         return {"status": "dry_run", **summary}
 
     media_id = upload_media(media) if media else None
+    # Alt text has to land before the post: a failure here stops the post, with nothing public yet.
+    if media_id and alt:
+        set_alt_text(media_id, alt)
     tweet_id = publish_post(body, media_id)
     url = f"https://x.com/{settings.x_username}/status/{tweet_id}"
     result: dict[str, Any] = {"status": "posted", "tweet_id": tweet_id, "url": url, **summary}

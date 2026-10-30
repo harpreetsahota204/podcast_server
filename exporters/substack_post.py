@@ -174,6 +174,7 @@ def crosspost_to_substack(slug: str, dry_run: bool = False) -> dict[str, Any]:
             title=source.title,
             subtitle=source.description,
             markdown=body,
+            search_engine_title=source.title,
             search_engine_description=source.description,
             slug=slug,
             tags=source.tags,

@@ -453,6 +453,20 @@ class CrosspostCollectorTests(TempDirTestCase):
         first = {o.metric: o.value for o in result.observations if o.entity_id == "11"}
         self.assertEqual(first, {"views": 120, "opens": 80, "clicks": 5, "reactions": 3, "comments": 0})
 
+    def test_substack_counts_each_newsletter_once(self) -> None:
+        """A newsletter's several log events (drafted, scheduled, published) are one post in the stats."""
+        from metrics.collectors.substack import SubstackCollector
+
+        self.write_log(
+            settings.substack_newsletter_log_path,
+            {"event": "drafted", "slug": "nl-a", "draft_id": 21}, {"event": "published", "slug": "nl-a", "draft_id": 21},
+        )
+        posts = [{"id": 21, "slug": "nl-a", "title": "Newsletter", "stats": {"views": 30, "opened": 12}}]
+        with mock.patch("metrics.collectors.substack.published_posts", return_value=posts):
+            result = SubstackCollector().collect(make_ctx())
+        self.assertEqual([e.entity_id for e in result.entities], ["21"])
+        self.assertEqual(result.notes, ["1 of 1 logged posts are published and were read"])
+
     def test_substack_without_logged_posts_never_signs_in(self) -> None:
         """No cross-posts means no call to Substack's private API at all."""
         from metrics.collectors.substack import SubstackCollector
@@ -797,7 +811,7 @@ class YouTubeTests(TempDirTestCase):
             with self.assertRaises(ValueError):
                 upload_video_to_youtube(str(video_file), "T", "D", episode_slug="../bad")
             get_service.assert_not_called()
-            upload_video_to_youtube(str(video_file), "T", "D", episode_slug="ep-a")
+            upload_video_to_youtube(str(video_file), "T", "D", episode_slug="ep-a", discovery_override="fixture")
         logged = json.loads(settings.youtube_upload_log_path.read_text())
         self.assertEqual((logged["video_id"], logged["episode_slug"]), ("new1", "ep-a"))
 

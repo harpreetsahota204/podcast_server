@@ -40,6 +40,7 @@ from PIL import Image
 
 from core.config import settings
 from core.credentials import write_private_json
+from core.discovery import check_instagram, clean_alt_text, gate
 from core.formatting import validate_slug
 from core.jsonl import append_record, read_records
 from core.net import open_https
@@ -304,13 +305,17 @@ def post_to_instagram(
     post_type: PostType = "image",
     dry_run: bool = False,
     episode_slug: str | None = None,
+    alt_text: str | None = None,
+    discovery_override: str | None = None,
 ) -> dict[str, Any]:
     """Publish a feed post to INSTAGRAM_USERNAME and log it; return the media id and post URL.
 
-    Every check runs before anything is uploaded. `dry_run` runs the same checks
-    (including converting the image) and reports what would be posted without uploading
-    or contacting Instagram. If the same image was already posted with the same caption,
-    that post is returned instead. `episode_slug` credits the post to that episode.
+    Every check runs before anything is uploaded, including the discovery check: alt text
+    and a brief phrase early in the caption for `episode_slug`, unless `discovery_override`
+    gives the human's reason. `dry_run` runs the same checks (including converting the image)
+    and reports what would be posted without uploading or contacting Instagram. If the same
+    image was already posted with the same caption, that post is returned instead.
+    `episode_slug` credits the post to that episode.
     """
     # 1. Local checks: post type, media file, caption, episode, and the saved token (no network yet).
     if post_type != "image":
@@ -319,8 +324,10 @@ def post_to_instagram(
         raise ValueError(f"An image post takes exactly one file; got {len(media_paths)}.")
     source = _resolve_image(media_paths[0])
     text = validate_caption(caption)
+    alt = clean_alt_text(alt_text)
     slug = validate_slug(episode_slug) if episode_slug else None
     token = load_token()
+    override = gate("instagram", slug, discovery_override, lambda brief: check_instagram(brief, text, alt))
     username = token["username"]
     source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
 
@@ -335,8 +342,11 @@ def post_to_instagram(
             "width": width,
             "height": height,
             "caption_chars": len(text),
+            "alt_text_chars": len(alt or ""),
             "episode_slug": slug,
         }
+        if override is not None:
+            summary["discovery_override"] = override
         if dry_run:
             return {"status": "dry_run", **summary}
 
@@ -347,7 +357,8 @@ def post_to_instagram(
 
     # 4. Meta's two steps: a container from the public URL, then publishing it once it's processed.
     access_token = token["access_token"]
-    container = call_graph(f"{token['user_id']}/media", access_token, {"image_url": image_url, "caption": text})
+    fields = {"image_url": image_url, "caption": text, **({"alt_text": alt} if alt else {})}
+    container = call_graph(f"{token['user_id']}/media", access_token, fields)
     _wait_until_finished(container["id"], access_token)
     try:
         media_id = call_graph(f"{token['user_id']}/media_publish", access_token, {"creation_id": container["id"]})["id"]
