@@ -19,6 +19,7 @@ import subprocess
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -631,6 +632,26 @@ class XPostTests(unittest.TestCase):
         """Mock subprocess.run returning each stdout in turn with exit code 0."""
         return mock.MagicMock(side_effect=[subprocess.CompletedProcess([], 0, out, "") for out in stdout])
 
+    @staticmethod
+    def _stage_brief() -> None:
+        """Save a discovery brief for 'ep-one' whose primary phrase is 'new episode'."""
+        from core.discovery import make_brief, save_brief
+
+        save_brief(make_brief("ep-one", "new episode", ["alpha topic", "beta topic", "gamma topic"],
+                              "Engineers", "What is new?", ["Ada"]))
+
+    def test_episode_post_text_must_name_a_brief_phrase(self) -> None:
+        """A post promoting an episode is refused before xurl runs when its text misses the brief; a reason skips it."""
+        from exporters.x_post import post_to_x
+
+        self._stage_brief()
+        with mock.patch("exporters.x_post.subprocess.run") as run, self.assertRaisesRegex(ValueError, "Discovery check failed"):
+            post_to_x("Listen now", episode_slug="ep-one")
+        run.assert_not_called()
+        self.assertEqual(post_to_x("Listen now, with Ada", episode_slug="ep-one", dry_run=True)["status"], "dry_run")
+        preview = post_to_x("Listen now", episode_slug="ep-one", dry_run=True, discovery_override="teaser")
+        self.assertEqual(preview["discovery_override"], "teaser")
+
     def test_parse_handles_color_codes_and_trailing_text(self) -> None:
         """Colored JSON followed by status noise still parses to the post id."""
         from exporters.x_post import id_from_payload, parse_xurl_json
@@ -687,6 +708,7 @@ class XPostTests(unittest.TestCase):
         """Media is uploaded, its alt text set, its id attached to the post, and the accepted post logged."""
         from exporters.x_post import post_to_x
 
+        self._stage_brief()
         run = self._xurl_ok('{"data": {"id": "m-1"}}', '{"data": {"id": "m-1"}}', '{"data": {"id": "t-9"}}')
         with mock.patch("exporters.x_post.subprocess.run", run):
             result = post_to_x("-new episode", media_path=str(self.image), episode_slug="ep-one", alt_text="A chart")
@@ -702,6 +724,55 @@ class XPostTests(unittest.TestCase):
         self.assertEqual((logged["tweet_id"], logged["text"]), ("t-9", "-new episode"))
         # The metrics collector reads this log, so the episode credit must be recorded with the post.
         self.assertEqual(logged["episode_slug"], "ep-one")
+
+
+class BlogPostDateTests(unittest.TestCase):
+    """create_blog_post's publish dates: the website's blog collection requires pubDate."""
+
+    def setUp(self) -> None:
+        """Point the website and data dir at a temp folder."""
+        self.tmp = Path(tempfile.mkdtemp())
+        self.saved = (settings.website_path, settings.data_dir)
+        settings.website_path, settings.data_dir = self.tmp / "site", self.tmp / "data"
+
+    def tearDown(self) -> None:
+        """Restore settings and remove the temp folder."""
+        settings.website_path, settings.data_dir = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _write(body: str = "Body.") -> list[str]:
+        """Write the post 'dated' through the guarded path and return its frontmatter lines."""
+        from exporters.blog_post import create_blog_post
+
+        path = create_blog_post(
+            title="Dated", description="A post with dates.", content_markdown=body, slug="dated",
+            discovery_override="fixture for date tests",
+        )
+        return path.read_text(encoding="utf-8").split("---\n")[1].splitlines()
+
+    def test_new_post_gets_pub_date_now_after_description(self) -> None:
+        """A new post's pubDate is now, as ISO 8601 with a UTC offset, right after the description; no updatedDate."""
+        lines = self._write()
+        self.assertTrue(lines[1].startswith("description:"))
+        self.assertTrue(lines[2].startswith("pubDate: "))
+        published = datetime.fromisoformat(lines[2].removeprefix("pubDate: "))
+        self.assertIsNotNone(published.utcoffset())
+        self.assertLess(abs((datetime.now().astimezone() - published).total_seconds()), 60)
+        self.assertFalse(any(line.startswith("updatedDate:") for line in lines))
+
+    def test_rewrite_keeps_pub_date_line_verbatim_and_adds_updated_date(self) -> None:
+        """Overwriting keeps the original pubDate line byte for byte and records now as the only updatedDate."""
+        original = "pubDate: 2025-03-14T09:00:00-05:00"
+        settings.site_blog_dir.mkdir(parents=True)
+        (settings.site_blog_dir / "dated.md").write_text(
+            f'---\ntitle: "Dated"\n{original}\nupdatedDate: 2025-04-01\ntags: []\n---\n\nOld body.\n', encoding="utf-8"
+        )
+        lines = self._write("New body.")
+        self.assertEqual(lines[2], original)
+        updated = [line for line in lines if line.startswith("updatedDate:")]
+        self.assertEqual(len(updated), 1)
+        self.assertIsNotNone(datetime.fromisoformat(updated[0].removeprefix("updatedDate: ")).utcoffset())
 
 
 class DevtoTests(unittest.TestCase):
@@ -961,6 +1032,23 @@ class SubstackTests(unittest.TestCase):
         self.assertEqual((result["status"], result["edit_url"]), ("draft_created", "https://show.substack.com/publish/post/42"))
         logged = json.loads(settings.substack_post_log_path.read_text())
         self.assertEqual((logged["slug"], logged["draft_id"]), ("ep-one", 42))
+
+    def test_live_preview_image_becomes_the_draft_cover(self) -> None:
+        """With the post's preview image live, the new draft gets it as its cover; a refusal is reported, not raised."""
+        from exporters.substack_post import crosspost_to_substack
+
+        url = "https://example.com/og/blog/ep-one.png"
+        with mock.patch("exporters.substack_post.Api") as api, mock.patch("exporters.substack_post.reachable_image", return_value=url):
+            client = api.return_value
+            client.get_drafts.return_value = []
+            client.get_published_posts.return_value = {"posts": []}
+            client.create_draft_from_markdown.return_value = {"draft": {"id": 42}}
+            client.put_draft.side_effect = RuntimeError("cover refused")
+            result = crosspost_to_substack("ep-one")
+
+        client.put_draft.assert_called_once_with(42, cover_image=url)
+        self.assertEqual((result["status"], result["cover_image"]), ("draft_created", url))
+        self.assertIn("cover refused", result["cover_image_error"])
 
     def test_existing_draft_is_returned_instead_of_creating_another(self) -> None:
         """A logged draft answers without signing in; one found on Substack (e.g. after a failed call) is reused."""

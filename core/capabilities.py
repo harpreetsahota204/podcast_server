@@ -34,7 +34,12 @@ CHANNELS: list[tuple[str, list[Callable[[], Check]], list[str]]] = [
             "podcast_update_episode", "podcast_rebuild_feed", "podcast_deploy_site",
         ],
     ),
-    ("Website blog", [check_blog], ["podcast_stage_discovery", "podcast_create_blog", "podcast_deploy_site"]),
+    (
+        "Website blog",
+        [check_blog, doctor.check_site_rules],
+        ["podcast_stage_discovery", "podcast_create_blog", "podcast_deploy_site"],
+    ),
+    ("Search-engine pings (IndexNow)", [doctor.check_indexnow], ["podcast_announce_urls"]),
     (
         "YouTube",
         [doctor.check_youtube],
@@ -50,6 +55,11 @@ CHANNELS: list[tuple[str, list[Callable[[], Check]], list[str]]] = [
         "dev.to",
         [doctor.check_devto],
         ["podcast_crosspost_to_devto", "podcast_list_devto_articles", "podcast_unpublish_devto_article"],
+    ),
+    (
+        "Hashnode",
+        [doctor.check_hashnode],
+        ["podcast_crosspost_to_hashnode", "podcast_list_hashnode_posts", "podcast_delete_hashnode_post"],
     ),
     (
         "Substack",
@@ -73,7 +83,10 @@ MANUAL = [
     "Video podcast episodes: the feed carries audio only; the human uploads video to Spotify for Creators or Apple.",
     "Instagram carousels, Stories, and Reels: only single-image posts are supported.",
     "Thumbnails on YouTube Shorts: the API can't set them; the human sets them in YouTube Studio.",
-    "Publishing dev.to drafts and Substack cross-posts: the tools only create drafts; the human publishes them.",
+    "Publishing Substack cross-posts: the tool only creates drafts; the human publishes them in Substack's editor.",
+    "Getting a page into Google: IndexNow doesn't reach Google; Google reads the site's sitemap (submit it once in Search Console).",
+    "Hashnode publication settings (SEO title, About, navbar, newsletter, custom domain, series, FAQ blocks, AI citation tracking): its API has no settings calls; the human uses the Hashnode dashboard.",
+    "Adding a page to the site's /llms.txt: no tool; it's a hand-edited file in the website repo, committed outside the engine.",
     "Showing your own transcripts in Apple Podcasts: a one-time Podcasts Connect setting (display transcripts I provide).",
 ]
 

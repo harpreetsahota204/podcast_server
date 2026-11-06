@@ -3,10 +3,13 @@
 Pure XML generation; where the feed is written or uploaded is decided by `core.site`.
 """
 
+import html
 import os
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from email.utils import format_datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -43,13 +46,76 @@ def _rfc822(published_at: str) -> str:
         return published_at
 
 
+@lru_cache(maxsize=1)
+def _load_related_posts_map() -> dict[str, list[dict[str, str]]]:
+    """Read related content from website's src/data/relatedContent.ts and finished_blogs."""
+    if settings.site_mode != "astro" or not settings.website_path:
+        return {}
+    rc_path = settings.website_path / "src" / "data" / "relatedContent.ts"
+    blog_dir = settings.website_path / "finished_blogs"
+    if not rc_path.is_file() or not blog_dir.is_dir():
+        return {}
+
+    try:
+        text = rc_path.read_text(encoding="utf-8")
+        matches = re.findall(r"'([a-zA-Z0-9_-]+)':\s*\[(.*?)\]", text, re.DOTALL)
+        ep_to_slugs: dict[str, list[str]] = {}
+        for ep, posts_raw in matches:
+            posts = [p.strip().strip("'\"") for p in posts_raw.split(",") if p.strip()]
+            ep_to_slugs[ep] = posts
+
+        titles: dict[str, str] = {}
+        for post_slug in {s for slugs in ep_to_slugs.values() for s in slugs}:
+            md_path = blog_dir / f"{post_slug}.md"
+            if md_path.is_file():
+                content = md_path.read_text(encoding="utf-8")
+                m = re.search(r'title:\s*["\']([^"\']+)["\']', content) or re.search(r'title:\s*(.+)', content)
+                if m:
+                    titles[post_slug] = m.group(1).strip().strip('"\'')
+
+        result: dict[str, list[dict[str, str]]] = {}
+        url_tmpl = settings.blog_url_template or "https://employabledatascientist.com/blog/{slug}/"
+        for ep, slugs in ep_to_slugs.items():
+            links = []
+            for s in slugs:
+                if s in titles:
+                    links.append({"title": titles[s], "url": url_tmpl.format(slug=s)})
+            if links:
+                result[ep] = links
+        return result
+    except Exception:
+        return {}
+
+
 def _show_notes_html(episode: dict[str, Any]) -> str:
     """Prefer imported HTML show notes; otherwise render the Markdown ones."""
     if episode["content_html"]:
-        return episode["content_html"]
-    if episode["content_markdown"]:
-        return _MARKDOWN.render(episode["content_markdown"])
-    return ""
+        body = episode["content_html"]
+    elif episode["content_markdown"]:
+        body = _MARKDOWN.render(episode["content_markdown"])
+    else:
+        body = ""
+
+    slug = episode.get("slug")
+    if slug and body:
+        related_map = _load_related_posts_map()
+        related = related_map.get(slug, [])
+        if related:
+            lines = [
+                "<hr />",
+                "<p><strong>Companion Technical Field Notes:</strong><br />",
+            ]
+            for post in related:
+                title_escaped = html.escape(post["title"])
+                url = post["url"]
+                lines.append(f'• <a href="{url}">{title_escaped}</a><br />')
+            lines.append("</p>")
+            if settings.site_mode == "astro":
+                ep_url = f"{settings.podcast_link.rstrip('/')}/{slug}/"
+                lines.append(f'<p>Full episode notes &amp; transcript: <a href="{ep_url}">{ep_url}</a></p>')
+            body = (body.rstrip() + "\n" + "\n".join(lines)).strip()
+
+    return body
 
 
 def _add_channel_metadata(channel: ET.Element) -> None:

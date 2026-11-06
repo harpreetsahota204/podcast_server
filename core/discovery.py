@@ -41,7 +41,7 @@ CHANNEL_RULES = {
     "blog": f"Description is {BLOG_DESCRIPTION_CHARS[0]}-{BLOG_DESCRIPTION_CHARS[1]} characters and contains the primary phrase; the title names a brief phrase or entity.",
     "youtube": f"Title names a brief phrase or entity; the primary phrase is in the first {YOUTUBE_HOOK_CHARS} characters of the description; tags include a brief phrase; regular videos have at least {MIN_YOUTUBE_CHAPTERS} chapters starting at 00:00, each at least {MIN_CHAPTER_SECONDS}s.",
     "instagram": f"Alt text of 1-{MAX_ALT_TEXT_CHARS} characters; a brief phrase in the first {INSTAGRAM_HOOK_CHARS} characters of the caption.",
-    "x": "Alt text on any attached image or video.",
+    "x": "Alt text on any attached image or video; a post promoting an episode (episode_slug) names a brief phrase or entity in its text.",
     "newsletter": f"SEO description (default: the subtitle) is {BLOG_DESCRIPTION_CHARS[0]}-{BLOG_DESCRIPTION_CHARS[1]} characters and contains the primary phrase; the SEO title (default: the title) names a brief phrase or entity.",
 }
 
@@ -205,6 +205,13 @@ def clean_alt_text(alt_text: str | None) -> str | None:
     if len(text) > MAX_ALT_TEXT_CHARS:
         raise ValueError(f"Alt text allows {MAX_ALT_TEXT_CHARS} characters; this has {len(text)}.")
     return text or None
+
+
+def check_x(brief: DiscoveryBrief, text: str) -> list[str]:
+    """Problems with an X post promoting the brief's content: its text should name what people search for."""
+    if not _mentions(text, brief.phrases_and_entities):
+        return ["the post text names no brief phrase or entity (X search and its recommendations read the words)"]
+    return []
 
 
 def check_instagram(brief: DiscoveryBrief, caption: str, alt_text: str | None) -> list[str]:

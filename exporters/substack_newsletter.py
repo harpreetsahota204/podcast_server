@@ -49,6 +49,7 @@ from exporters.substack_post import (
     _edit_url,
     _publication_url,
     inspect_body,
+    set_cover_image,
 )
 
 # Image types Substack's uploader takes for a cover image.
@@ -233,20 +234,6 @@ def _rewrite_draft(
         ) from exc
 
 
-def _set_cover_image(api: Api, draft_id: Any, cover_image: str) -> str | None:
-    """Set the draft's cover image (its thumbnail and social preview); return an error message instead of raising.
-
-    A local file is uploaded to Substack first. The draft exists by now, so a failure here is reported
-    with the result rather than raised, and the human can set the image in the editor instead.
-    """
-    try:
-        url = cover_image if cover_image.startswith("https://") else api.get_image(cover_image)["url"]
-        api.put_draft(draft_id, cover_image=url)
-    except Exception as exc:
-        return f"Couldn't set the cover image ({_detail(exc)}); upload it in the editor's post settings instead."
-    return None
-
-
 def draft_newsletter(
     slug: str,
     dry_run: bool = False,
@@ -320,7 +307,7 @@ def draft_newsletter(
         event = "drafted"
 
     # 4. The cover image goes on last; a failure is reported, because the draft itself is already saved.
-    cover_error = _set_cover_image(api, draft_id, newsletter.cover_image) if newsletter.cover_image else None
+    cover_error = set_cover_image(api, draft_id, newsletter.cover_image) if newsletter.cover_image else None
 
     # 5. Record the revision just written, so the next update can tell whether the editor changed the draft.
     edit_url = _edit_url(draft_id)

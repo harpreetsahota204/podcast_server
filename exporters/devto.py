@@ -1,10 +1,10 @@
-"""Cross-posts a companion blog post to dev.to as an unpublished draft.
+"""Cross-posts a companion blog post to dev.to, as an unpublished draft or (with `publish=True`) live.
 
-The engine never publishes on dev.to: it creates a draft, and the human reviews
-and publishes it from the dev.to dashboard. Each draft carries a canonical URL
-pointing at the original (the post on the show's website, unless its frontmatter
-names another), so search engines credit it. Before creating anything, the engine
-looks for an existing draft of the same post (in its own log, then among the
+By default the engine creates a draft, and the human reviews and publishes it from
+the dev.to dashboard; `publish=True` puts the copy live at once. Each article carries
+a canonical URL pointing at the original (the post on the show's website, unless its
+frontmatter names another), so search engines credit it. Before creating anything, the
+engine looks for an existing article of the same post (in its own log, then among the
 account's dev.to articles), so a retry after a timeout can't leave a duplicate.
 
 The account's articles can also be listed, and a published one turned back into a draft
@@ -20,7 +20,7 @@ from typing import Any
 from core.config import settings
 from core.jsonl import append_record, read_records
 from core.net import open_https
-from exporters.blog_post import crosspost_source
+from exporters.blog_post import crosspost_source, reachable_image, with_footer
 
 DEVTO_API = "https://dev.to/api"
 DASHBOARD_URL = "https://dev.to/dashboard"
@@ -118,6 +118,14 @@ def unpublish_article(article_id: int, dry_run: bool = False) -> dict[str, Any]:
     return result
 
 
+def update_article(article_id: int, fields: dict[str, Any]) -> dict[str, Any]:
+    """Change fields (e.g. `body_markdown`) of one of the account's articles and return dev.to's response.
+
+    The caller owns the change and its checks; a published article stays published.
+    """
+    return _request(f"/articles/{article_id}", {"article": fields}, method="PUT")
+
+
 def create_article(article: dict[str, Any]) -> dict[str, Any]:
     """Create one dev.to article from a ready payload and return dev.to's response (`id`, `url`).
 
@@ -167,19 +175,25 @@ def crosspost_to_devto(
     article_tags = validate_tags(tags)
     _api_key()
 
-    # 2. The article as dev.to receives it.
+    # 2. The article as dev.to receives it, ending with the show's cross-post footer (if it has one)
+    #    and with the post's preview image as its cover when that image is live.
+    body_markdown = with_footer(source.body_markdown, source.canonical_url)
+    cover = reachable_image(source.image_url)
     article = {
         "title": source.title,
         "description": source.description,
-        "body_markdown": source.body_markdown,
+        "body_markdown": body_markdown,
         # A JSON list: dev.to silently drops tags sent as the comma-separated string its docs describe.
         "tags": article_tags,
         "canonical_url": source.canonical_url,
         "published": bool(publish),
+        **({"main_image": cover} if cover else {}),
     }
-    summary = {"slug": slug, "title": source.title, "canonical_url": source.canonical_url, "tags": article_tags}
+    summary = {
+        "slug": slug, "title": source.title, "canonical_url": source.canonical_url, "tags": article_tags, "cover_image": cover,
+    }
     if dry_run:
-        return {"status": "dry_run", **summary, "body_chars": len(source.body_markdown), "published": bool(publish)}
+        return {"status": "dry_run", **summary, "body_chars": len(body_markdown), "published": bool(publish)}
 
     # 3. Reuse an existing draft rather than creating a second one.
     if existing := _find_existing_draft(slug, source.canonical_url):

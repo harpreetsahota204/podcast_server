@@ -4,6 +4,8 @@ SITE_MODE=astro  Writes the feed and one Markdown page per episode into a local
                  checkout of the website repo, then deploys by committing only
                  those generated files and pushing the configured branch (for
                  hosts that build from git: Netlify, Vercel, Cloudflare Pages).
+                 After a push, the changed pages are announced to search
+                 engines through IndexNow once they are live (`core.indexnow`).
 SITE_MODE=none   Uploads the feed to R2 under `feed_object_key` with a short
                  cache lifetime; no website required.
 
@@ -19,6 +21,7 @@ from typing import Any
 from core.config import settings
 from core.db import CatalogDB
 from core.feed_generator import build_rss_xml, write_atomic
+from core.indexnow import start_announce, urls_for_changed_files
 from core.storage import R2StorageClient
 from exporters.astro_markdown import export_astro_markdown
 
@@ -94,6 +97,10 @@ def deploy_paths(paths: list[Path], message: str) -> dict[str, Any]:
         # `diff --cached --quiet` exits 0 when nothing under our paths changed.
         if _git(repo, "diff", "--cached", "--quiet", "--", *pathspecs, check=False).returncode == 0:
             return {"status": "no_changes"}
+        # Files added or modified by this commit (deletions produce no page), for the search-engine ping below.
+        changed_files = _git(
+            repo, "diff", "--cached", "--name-only", "--diff-filter=AM", "--", *pathspecs
+        ).stdout.splitlines()
 
         _git(repo, "commit", "-m", message, "--", *pathspecs)
         _git(repo, "push", "origin", branch_wanted)
@@ -101,7 +108,19 @@ def deploy_paths(paths: list[Path], message: str) -> dict[str, Any]:
         return {"status": "failed", "error": (e.stderr or str(e)).strip()}
     except subprocess.TimeoutExpired:
         return {"status": "failed", "error": f"git timed out after {GIT_TIMEOUT_SECONDS}s"}
-    return {"status": "pushed", "commit": message, "paths": pathspecs}
+    return {"status": "pushed", "commit": message, "paths": pathspecs, "indexnow": _announce(changed_files)}
+
+
+def _announce(changed_files: list[str]) -> dict[str, Any]:
+    """Start the IndexNow ping for the pages these files produce; report a failure instead of raising.
+
+    The push already succeeded, so a problem here must not make the deploy look failed;
+    `podcast_announce_urls` retries it.
+    """
+    try:
+        return start_announce(urls_for_changed_files(changed_files))
+    except Exception as e:
+        return {"status": "failed", "error": f"{type(e).__name__}: {e}"}
 
 
 def deploy_site(message: str, extra_paths: list[Path] | None = None) -> dict[str, Any]:

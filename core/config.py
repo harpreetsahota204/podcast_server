@@ -8,9 +8,11 @@ Set `PODCAST_SERVER_ENV_FILE` to load a different env file (e.g. one per show).
 """
 
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Literal, Self
+from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -98,11 +100,29 @@ class Settings(BaseSettings):
     x_username: str | None = Field(default=None, description="X handle to post as (no @); unset disables posting")
     xurl_app: str | None = Field(default=None, description="App name inside the xurl auth file")
     xurl_path: Path | None = Field(default=None, description="xurl binary; default: first xurl on PATH")
-    # dev.to cross-posting creates drafts only; the human publishes them from the dev.to dashboard.
+    # IndexNow asks Bing, Yandex, and other participating engines (not Google) to recrawl pages a deploy changed.
+    # The key isn't a secret: the site must serve it publicly at <site origin>/<key>.txt to prove ownership.
+    indexnow_key: str | None = Field(
+        default=None, description="IndexNow key served at <site origin>/<key>.txt; unset disables search-engine pings"
+    )
+    # dev.to cross-posts are drafts by default; `publish=True` puts the copy live with its canonical URL.
     devto_api_key: str | None = Field(default=None, description="dev.to API key; unset disables cross-posting")
     blog_url_template: str | None = Field(
         default=None,
         description="Public URL of a blog post with a {slug} placeholder; the canonical URL of cross-posts",
+    )
+    blog_image_url_template: str | None = Field(
+        default=None,
+        description="Public URL of a blog post's preview image with {slug} (e.g. the site's og:image); the cover of cross-posts",
+    )
+    # Hashnode goes through its official CLI, which keeps and refreshes its own login (or reads HASHNODE_PAT itself),
+    # so no Hashnode credential is ever read by the engine. Its API needs a Pro (or Growth) plan on the publication.
+    hashnode_publication_host: str | None = Field(
+        default=None,
+        description="Hashnode publication host, e.g. blog.example.com or name.hashnode.dev; unset disables Hashnode",
+    )
+    hashnode_cli_path: Path | None = Field(
+        default=None, description="Hashnode CLI binary (@hashnode/cli); default: first hashnode on PATH"
     )
     # Substack has no official publishing API: drafts go through its private web API with a browser
     # session cookie, which controls the whole account, so it lives in its own 0600 file, never in .env.
@@ -161,10 +181,23 @@ class Settings(BaseSettings):
             not self.blog_url_template.startswith("https://") or "{slug}" not in self.blog_url_template
         ):
             raise ValueError("BLOG_URL_TEMPLATE must be an https:// URL containing {slug}.")
+        # Platforms fetch cover images themselves, so only a public https URL with the slug can work.
+        if self.blog_image_url_template and (
+            not self.blog_image_url_template.startswith("https://") or "{slug}" not in self.blog_image_url_template
+        ):
+            raise ValueError("BLOG_IMAGE_URL_TEMPLATE must be an https:// URL containing {slug}.")
         if self.substack_publication_url:
             if not self.substack_publication_url.startswith("https://"):
                 raise ValueError("SUBSTACK_PUBLICATION_URL must be an https:// URL.")
             self.substack_publication_url = self.substack_publication_url.rstrip("/")
+        # The CLI takes a bare host; a pasted URL would never match the publication.
+        if self.hashnode_publication_host:
+            self.hashnode_publication_host = self.hashnode_publication_host.strip().removeprefix("https://").rstrip("/")
+            if "/" in self.hashnode_publication_host or "://" in self.hashnode_publication_host:
+                raise ValueError("HASHNODE_PUBLICATION_HOST must be a bare host, e.g. blog.example.com.")
+        # IndexNow accepts 8-128 letters, digits, and dashes; anything else is refused by every engine.
+        if self.indexnow_key is not None and not re.fullmatch(r"[A-Za-z0-9-]{8,128}", self.indexnow_key):
+            raise ValueError("INDEXNOW_KEY must be 8-128 letters, digits, or dashes.")
         return self
 
     # --- Derived paths ---
@@ -190,6 +223,22 @@ class Settings(BaseSettings):
         return self._site_root / self.website_blog_dir
 
     @property
+    def site_origin(self) -> str:
+        """Scheme and host of the public website (from PODCAST_LINK), e.g. https://example.com."""
+        parsed = urlparse(self.podcast_link)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    @property
+    def site_rules_path(self) -> Path:
+        """Optional on-page rules every blog post must meet before it goes live (tags, internal links, CTA)."""
+        return self.templates_dir / "site_rules.json"
+
+    @property
+    def indexnow_log_path(self) -> Path:
+        """Append-only record of every IndexNow submission: which URLs were live and what the API answered."""
+        return self.data_dir / "social" / "indexnow.jsonl"
+
+    @property
     def _site_root(self) -> Path:
         """Website repo root; only meaningful in astro mode."""
         if self.website_path is None:
@@ -205,6 +254,21 @@ class Settings(BaseSettings):
     def thumbnails_dir(self) -> Path:
         """Staging directory for generated YouTube thumbnails."""
         return self.data_dir / "thumbnails"
+
+    @property
+    def thumbnail_art_dir(self) -> Path:
+        """Clean, lettering-free art (`<slug>-art.png`) that the thumbnail and episode-icon renderers read."""
+        return self.thumbnails_dir / "thumbnail_art_templates"
+
+    @property
+    def final_art_dir(self) -> Path:
+        """Finished PNGs: YouTube thumbnails (`<slug>-final.png`) and newsletter previews (`<slug>-substack.png`)."""
+        return self.thumbnails_dir / "final_art"
+
+    @property
+    def podcast_art_dir(self) -> Path:
+        """Square episode icons (`<slug>-episode.jpg`) for podcast apps, plus their review contact sheet."""
+        return self.thumbnails_dir / "podcast_art"
 
     @property
     def transcripts_dir(self) -> Path:
@@ -275,6 +339,21 @@ class Settings(BaseSettings):
     def devto_unpublish_log_path(self) -> Path:
         """Append-only record of every dev.to article the engine unpublished (back to draft)."""
         return self.data_dir / "social" / "devto_unpublished.jsonl"
+
+    @property
+    def hashnode_post_log_path(self) -> Path:
+        """Append-only record of every Hashnode post or draft the engine created (one JSON object per line)."""
+        return self.data_dir / "social" / "hashnode_posts.jsonl"
+
+    @property
+    def hashnode_deletion_log_path(self) -> Path:
+        """Append-only record of every Hashnode post the engine removed, with what it was."""
+        return self.data_dir / "social" / "hashnode_deletions.jsonl"
+
+    @property
+    def crosspost_footer_path(self) -> Path:
+        """Optional Markdown appended to dev.to and Hashnode copies (author bio, links); `{original_url}` is filled in."""
+        return self.templates_dir / "crosspost_footer.md"
 
     @property
     def substack_post_log_path(self) -> Path:

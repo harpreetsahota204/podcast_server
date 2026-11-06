@@ -1,0 +1,10 @@
+{
+  "blog": {
+    "allowed_tags": ["Interviews", "Engineering", "Research"],
+    "min_internal_links": 1,
+    "internal_link_prefixes": ["/blog/", "/podcast/"],
+    "cta_link_prefixes": ["/services/", "/newsletter/"],
+    "min_faq_items": 3,
+    "warn_without_evidence": true
+  }
+}

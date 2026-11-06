@@ -83,7 +83,7 @@ def generate_youtube_thumbnail(
     """
     validate_slug(output_filename)
     # Create the staging dir up front so the image generator can write straight into it.
-    settings.thumbnails_dir.mkdir(parents=True, exist_ok=True)
+    settings.thumbnail_art_dir.mkdir(parents=True, exist_ok=True)
 
     full_prompt = (
         f"{prompt_text}. YouTube video thumbnail composition, 16:9 wide, clean focal subject on the left "
@@ -94,7 +94,7 @@ def generate_youtube_thumbnail(
     return {
         "status": "staged",
         "prompt": full_prompt,
-        "local_path": str(settings.thumbnails_dir / f"{output_filename}.png"),
+        "local_path": str(settings.thumbnail_art_dir / f"{output_filename}.png"),
         "next_step": "Render the art to local_path, then call podcast_render_thumbnail to add the headline.",
     }
 

@@ -17,10 +17,13 @@ import sys
 from collections.abc import Callable
 from urllib.parse import urlparse
 
+from core import indexnow
 from core.config import settings
 from core.credentials import readable_by_others
 from core.net import open_https
+from core.site_rules import load_blog_rules
 from core.storage import R2StorageClient
+from exporters import hashnode
 from exporters.devto import DevtoError, devto_username
 from exporters.instagram import InstagramError, verify_account
 from exporters.substack_post import SubstackError, substack_publication
@@ -154,7 +157,7 @@ def check_instagram() -> Check:
 
 
 def check_devto() -> Check:
-    """dev.to cross-posting is off, or the API key works and drafts get a canonical URL."""
+    """dev.to cross-posting is off, or the API key works and articles get a canonical URL."""
     if not settings.devto_api_key:
         return "OFF", "set DEVTO_API_KEY and BLOG_URL_TEMPLATE to enable"
     if not settings.blog_url_template:
@@ -163,7 +166,66 @@ def check_devto() -> Check:
         username = devto_username()
     except DevtoError as e:
         return "WARN", str(e)
-    return "PASS", f"drafts go to dev.to/{username}; canonical URL {settings.blog_url_template}"
+    return "PASS", f"articles go to dev.to/{username}; canonical URL {settings.blog_url_template}"
+
+
+def check_hashnode() -> Check:
+    """Hashnode is off, or the CLI is logged in, the publication answers, and its AEO settings are reported."""
+    if not settings.hashnode_publication_host:
+        return "OFF", "set HASHNODE_PUBLICATION_HOST and log in with `hashnode login` to enable"
+    try:
+        username = hashnode.whoami()
+        found = hashnode.publication()
+    except hashnode.HashnodeError as e:
+        return "WARN", str(e)
+    aeo = found["aeoSettings"]
+    # AI crawlers a show switched off can't cite the copies; say which, since the toolkit allows each by default.
+    blocked = sorted(name for name, allowed in aeo["crawlers"].items() if not allowed)
+    toolkit = "AEO toolkit on" if aeo["isEnabled"] else "AEO toolkit off (Growth plan)"
+    llms = "llms.txt served" if aeo["llmsTxtEnabled"] else "no llms.txt"
+    detail = f"posting to {found['url']} as @{username}; {toolkit}, {llms}"
+    if blocked:
+        return "WARN", f"{detail}; AI crawlers blocked: {', '.join(blocked)}"
+    return "PASS", detail
+
+
+def check_indexnow() -> Check:
+    """Search-engine pings are off, or the site serves the IndexNow key file engines verify submissions against."""
+    if problem := indexnow.config_problem():
+        return "OFF", problem
+    location = indexnow.key_location()
+    try:
+        with open_https(location) as resp:
+            served = resp.read(256).decode("utf-8", errors="replace").strip()
+    except Exception as e:
+        return "WARN", f"{location} isn't reachable ({e}); engines refuse submissions until the site serves it."
+    # Engines compare the file's content with the submitted key, so a stale file fails every submission.
+    if served != settings.indexnow_key:
+        return "FAIL", f"{location} doesn't contain INDEXNOW_KEY; serve a file holding exactly the key."
+    return "PASS", f"key file served at {location}; deploys announce changed pages (Bing, Yandex, and others; not Google)"
+
+
+def check_site_rules() -> Check:
+    """Blog posts are checked against the show's site rules, if it has a rules file, and that file is valid."""
+    # Malformed JSON (JSONDecodeError) and unknown keys both raise ValueError.
+    try:
+        rules = load_blog_rules()
+    except ValueError as e:
+        return "FAIL", str(e)
+    if rules is None:
+        return "OFF", f"no {settings.site_rules_path}; blog posts are checked against their discovery brief only"
+    active = [
+        name
+        for name, on in [
+            (f"{len(rules.allowed_tags)} allowed tags", bool(rules.allowed_tags)),
+            (f"{rules.min_internal_links}+ internal links", rules.min_internal_links > 0),
+            ("call-to-action link", bool(rules.cta_link_prefixes)),
+            (f"{rules.min_faq_items}+ FAQ items", rules.min_faq_items > 0),
+            ("evidence warning", rules.warn_without_evidence),
+        ]
+        if on
+    ]
+    return "PASS", f"blog posts need: {', '.join(active) or 'nothing (every rule is off)'}"
 
 
 def check_substack() -> Check:
@@ -212,7 +274,10 @@ CHECKS: list[tuple[str, Callable[[], Check]]] = [
     ("YouTube", check_youtube),
     ("X posting", check_x_posting),
     ("Instagram posting", check_instagram),
+    ("Blog site rules", check_site_rules),
+    ("Search-engine pings (IndexNow)", check_indexnow),
     ("dev.to cross-posting", check_devto),
+    ("Hashnode cross-posting", check_hashnode),
     ("Substack cross-posting", check_substack),
     ("Metrics sources", check_metrics_sources),
 ]

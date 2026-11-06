@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import settings
-from core.discovery import clean_alt_text, override_reason
+from core.discovery import check_x, clean_alt_text, gate, override_reason
 from core.formatting import validate_slug
 from core.jsonl import append_record, read_records
 from core.media_uploader import MEDIA_CONTENT_TYPES
@@ -150,9 +150,10 @@ def post_to_x(
     """Post `text` (plus optional media) as the configured account and record it in the post log.
 
     Every check runs before the upload, so a rejected call posts nothing. Attached media needs
-    `alt_text` (search and screen readers use it) unless `discovery_override` gives the human's
-    reason. `dry_run` runs the same checks and reports what would be sent without calling X.
-    `episode_slug` credits the post's metrics to that episode.
+    `alt_text` (search and screen readers use it), and with `episode_slug` the text must name a
+    phrase or entity from that episode's discovery brief, unless `discovery_override` gives the
+    human's reason. `dry_run` runs the same checks and reports what would be sent without calling X.
+    `episode_slug` also credits the post's metrics to that episode.
     """
     body = text.strip()
     if not body:
@@ -165,6 +166,9 @@ def post_to_x(
             "Attached media needs alt_text; nothing was posted. "
             "Add it, or pass discovery_override with the human's reason for skipping."
         )
+    # A post promoting an episode is checked against that episode's brief; other posts have none to check.
+    if episode_slug:
+        gate("x", validate_slug(episode_slug), discovery_override, lambda brief: check_x(brief, body))
     xurl_command()  # fail on missing configuration before anything is uploaded
 
     summary = {

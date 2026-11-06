@@ -31,7 +31,7 @@ from substack import Api
 from core.config import settings
 from core.credentials import write_private_json
 from core.jsonl import append_record, read_records
-from exporters.blog_post import CrosspostSource, crosspost_source
+from exporters.blog_post import CrosspostSource, crosspost_source, reachable_image
 
 # Library errors are returned to the agent; cap them so a long HTML error page stays readable.
 MAX_ERROR_CHARS = 300
@@ -144,6 +144,20 @@ def _remote_draft(api: Api, source: CrosspostSource) -> dict[str, Any] | None:
     return None
 
 
+def set_cover_image(api: Api, draft_id: Any, cover_image: str) -> str | None:
+    """Set a draft's cover image (its thumbnail and social preview); return an error message instead of raising.
+
+    A local file is uploaded to Substack first. The draft exists by now, so a failure here is reported
+    with the result rather than raised, and the human can set the image in the editor instead.
+    """
+    try:
+        url = cover_image if cover_image.startswith("https://") else api.get_image(cover_image)["url"]
+        api.put_draft(draft_id, cover_image=url)
+    except Exception as exc:
+        return f"Couldn't set the cover image ({_detail(exc)}); upload it in the editor's post settings instead."
+    return None
+
+
 def crosspost_to_substack(slug: str, dry_run: bool = False) -> dict[str, Any]:
     """Create an unpublished Substack draft of the website's blog post `slug`, opened by an attribution line.
 
@@ -157,7 +171,11 @@ def crosspost_to_substack(slug: str, dry_run: bool = False) -> dict[str, Any]:
     warnings = inspect_body(body)
     publication_url = _publication_url()
     _cookies_file()
-    summary = {"slug": slug, "title": source.title, "canonical_url": source.canonical_url, "tags": source.tags}
+    # The post's preview image becomes the draft's cover (thumbnail and social card) when it's live.
+    cover = reachable_image(source.image_url)
+    summary = {
+        "slug": slug, "title": source.title, "canonical_url": source.canonical_url, "tags": source.tags, "cover_image": cover,
+    }
     if dry_run:
         return {"status": "dry_run", **summary, "warnings": warnings, "body_chars": len(body)}
 
@@ -186,6 +204,7 @@ def crosspost_to_substack(slug: str, dry_run: bool = False) -> dict[str, Any]:
         ) from exc
 
     draft_id = created["draft"]["id"]
+    cover_error = set_cover_image(api, draft_id, cover) if cover else None
     record = {
         "created_at": datetime.now(UTC).isoformat(),
         **summary,
@@ -195,6 +214,7 @@ def crosspost_to_substack(slug: str, dry_run: bool = False) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": "draft_created",
         **record,
+        **({"cover_image_error": cover_error} if cover_error else {}),
         "warnings": warnings,
         "next_step": "Review the draft in Substack's editor and publish it there (choose whether to email subscribers).",
     }

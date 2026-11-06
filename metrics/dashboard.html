@@ -493,7 +493,7 @@ function alpha(hex, a) {
 // Built-in collectors get fixed colours; plugged-in sources get a stable one from the fallback set.
 const SOURCE_COLORS = {
   op3: "#5cc3cc", cloudflare: "#a896f2", youtube: "#f28b77", x: "#a8b8d8",
-  instagram: "#ef8fbf", devto: "#c3d36f", substack: "#d7c4a3",
+  instagram: "#ef8fbf", devto: "#c3d36f", substack: "#d7c4a3", hashnode: "#7fa7f5",
 };
 const FALLBACK_COLORS = ["#9ad4ff", "#f5d76e", "#b5e48c"];
 function sourceColor(source) {
@@ -503,7 +503,7 @@ function sourceColor(source) {
 }
 // Display names for built-in sources; a plugged-in source shows its collector name, capitalized.
 const SOURCE_NAMES = {
-  op3: "OP3", cloudflare: "Cloudflare", youtube: "YouTube", x: "X", instagram: "Instagram", devto: "dev.to", substack: "Substack",
+  op3: "OP3", cloudflare: "Cloudflare", youtube: "YouTube", x: "X", instagram: "Instagram", devto: "dev.to", substack: "Substack", hashnode: "Hashnode",
 };
 const sourceName = (source) => SOURCE_NAMES[source] || source.charAt(0).toUpperCase() + source.slice(1);
 // A metric label without its platform's name, for places that already say which platform ("YouTube views" → "Views").

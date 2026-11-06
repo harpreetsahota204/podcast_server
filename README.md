@@ -29,7 +29,7 @@ Your AI agent is the interface. You're the approver.
 
 Podcast hosts charge a monthly fee for three things: storage for the audio, a database of episodes, and an RSS feed, all behind a web dashboard. `podcast_server` keeps those three on infrastructure you own and replaces the dashboard with [MCP](https://modelcontextprotocol.io) tools. The "user interface" is whichever AI agent you already use: Claude, Cursor, Codex, or your own.
 
-You talk to your agent: *"The interview with Ada is ready in Descript. Prep it."* The agent stages the episode, drafts titles and show notes in your show's voice, and stops. You approve. The agent publishes, uploads the video, sets the thumbnail, posts the announcement, drafts copies of the companion blog post on dev.to and Substack (your site stays the original), and tells you a week later how it's doing.
+You talk to your agent: *"The interview with Ada is ready in Descript. Prep it."* The agent stages the episode, drafts titles and show notes in your show's voice, and stops. You approve. The agent publishes, uploads the video, sets the thumbnail, posts the announcement, asks search engines to crawl the new pages, copies the companion blog post to dev.to, Hashnode, and Substack (your site stays the original), and tells you a week later how it's doing.
 
 ```mermaid
 flowchart LR
@@ -95,14 +95,14 @@ flowchart TB
 
     subgraph ENGINE["Engine: show-neutral Python"]
         CORE[core: catalog, storage, feed, site, discovery checks, art, doctor, capabilities]
-        IO[importers and exporters: RSS, Descript, YouTube, X, Instagram, dev.to, Substack]
-        MET[metrics: OP3, Cloudflare, X, Instagram, YouTube, dev.to, Substack]
+        IO[importers and exporters: RSS, Descript, YouTube, X, Instagram, dev.to, Hashnode, Substack]
+        MET[metrics: OP3, Cloudflare, X, Instagram, YouTube, dev.to, Hashnode, Substack]
     end
 
     subgraph OWNED["Services you own"]
         R2[(Cloudflare R2 on your domain)]
         WEB[your website repo]
-        PLAT[YouTube, X, Instagram, dev.to, and Substack accounts]
+        PLAT[YouTube, X, Instagram, dev.to, Hashnode, and Substack accounts]
         HF[(private Hugging Face backup)]
     end
 
@@ -157,12 +157,12 @@ flowchart LR
     P[published episode] --> V[YouTube upload and thumbnail]
     P --> X[X post]
     P --> IG[Instagram post]
-    P --> DT[dev.to and Substack blog drafts]
+    P --> DT[dev.to, Hashnode, and Substack blog copies]
     V --> L[(logs in DATA_DIR/social)]
     X --> L
     IG --> L
     DT --> L
-    L --> C[daily collectors: OP3, Cloudflare, X, Instagram, YouTube, dev.to, Substack]
+    L --> C[daily collectors: OP3, Cloudflare, X, Instagram, YouTube, dev.to, Hashnode, Substack]
     C --> M[(metrics.db)]
     M --> D[offline dashboard and metrics tools]
     D -->|"how is the show doing?"| AG([your agent])
@@ -174,10 +174,10 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 
 | Level | What your client can do | Tools |
 | :--- | :--- | :--- |
-| Read-only | run without asking | `podcast_status`, `podcast_capabilities`, `podcast_inspect`, `podcast_list_episodes`, `podcast_get_episode`, `podcast_draft_social`, `podcast_metrics_summary`, `podcast_episode_metrics`, and the `podcast_list_*` tools (Instagram, YouTube, dev.to, Substack) |
+| Read-only | run without asking | `podcast_status`, `podcast_capabilities`, `podcast_inspect`, `podcast_list_episodes`, `podcast_get_episode`, `podcast_draft_social`, `podcast_metrics_summary`, `podcast_episode_metrics`, and the `podcast_list_*` tools (Instagram, YouTube, dev.to, Hashnode, Substack) |
 | Local files | run without asking | `podcast_stage_discovery`, `podcast_stage_thumbnail`, `podcast_render_thumbnail`, `podcast_render_episode_art`, `podcast_render_newsletter_preview`, `podcast_make_gif`, `podcast_metrics_report`, `podcast_create_blog`, `podcast_pull_newsletter` |
-| Outside services, additive | run, safe to retry | `podcast_stage_from_descript`, `podcast_rebuild_feed`, `podcast_upload_media_asset`, `podcast_crosspost_to_devto`, `podcast_crosspost_to_substack`, and `podcast_draft_newsletter` (unpublished drafts only), `podcast_unschedule_newsletter`, `podcast_metrics_collect`, `podcast_backup` |
-| Public edit | ask you first; safe to retry | `podcast_update_episode`, `podcast_deploy_site`, `podcast_set_youtube_thumbnail`, `podcast_unpublish_devto_article`, and (permanent) `podcast_delete_instagram_post`, `podcast_delete_youtube_video`, `podcast_delete_substack_post` |
+| Outside services, additive | run, safe to retry | `podcast_stage_from_descript`, `podcast_rebuild_feed`, `podcast_announce_urls`, `podcast_upload_media_asset`, `podcast_crosspost_to_substack`, and `podcast_draft_newsletter` (unpublished drafts only), `podcast_unschedule_newsletter`, `podcast_metrics_collect`, `podcast_backup` |
+| Public edit | ask you first; safe to retry | `podcast_update_episode`, `podcast_deploy_site`, `podcast_crosspost_to_devto`, `podcast_crosspost_to_hashnode`, `podcast_set_youtube_thumbnail`, `podcast_unpublish_devto_article`, and (permanent) `podcast_delete_instagram_post`, `podcast_delete_youtube_video`, `podcast_delete_hashnode_post`, `podcast_delete_substack_post` |
 | Public release | ask you first; never repeat blindly | `podcast_publish`, `podcast_publish_to_youtube`, `podcast_post_to_x`, `podcast_post_to_instagram`, `podcast_send_newsletter` |
 
 ### Design principles
@@ -196,13 +196,14 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 - **Two site modes:** `none` serves the feed from your R2 domain, with no website needed. `astro` writes one Markdown page per episode into your site repo and pushes only those files.
 - **Migration:** a GUID-preserving importer for any host's RSS feed, with audio mirrored into R2.
 - **Agent surface:** MCP tools covering staging (including Descript), publishing, episode edits, deploys, backups, blog posts, social drafts, X and Instagram posts, media uploads, YouTube uploads and thumbnails, and audience metrics. Each tool carries MCP safety annotations (read-only, destructive, idempotent), and the server sends its operating rules to every client on connect, including when to stop and ask the human. `podcast_capabilities` tells the agent which channels are ready right now, and which requests need the human, so it can show you what's possible before planning the work.
-- **Discovery at publish time:** each piece of content gets one approved brief (main search phrase, secondary phrases, audience, the question it answers, names people search for), and every publish path checks its own fields against it before anything goes public. That covers the episode title and summary, the blog's meta description, YouTube's title, the first 150 characters of the description, tags, and chapters, alt text and the visible start of an Instagram caption, and alt text on X media. A miss is refused, not warned about. New episodes also carry a transcript (`podcast:transcript`, which Apple displays), a chapters file, and their own artwork in the feed; YouTube uploads get a caption track and a playlist. Applies to content published from now on; nothing already published is changed.
-- **Blog cross-posting:** your site keeps the original; the companion blog post goes to dev.to and Substack as unpublished drafts, with site-relative links made absolute. dev.to drafts carry a canonical URL back to your site; Substack has no canonical setting, so its drafts open with an "Originally published at" link. You publish each one on its platform.
+- **Discovery at publish time:** each piece of content gets one approved brief (main search phrase, secondary phrases, audience, the question it answers, names people search for), and every publish path checks its own fields against it before anything goes public. That covers the episode title and summary, the blog's meta description, YouTube's title, the first 150 characters of the description, tags, and chapters, alt text and the visible start of an Instagram caption, and alt text and, for episode posts, a brief phrase in the text on X. A miss is refused, not warned about. New episodes also carry a transcript (`podcast:transcript`, which Apple displays), a chapters file, and their own artwork in the feed; YouTube uploads get a caption track and a playlist. Applies to content published from now on; nothing already published is changed.
+- **Blog cross-posting:** your site keeps the original; the companion blog post goes to dev.to and Hashnode (as a draft, or live with `publish=true`) and to Substack (as a draft), with site-relative links made absolute, the post's FAQ as a section, and an optional footer of your own (bio, links). dev.to and Hashnode copies carry a canonical URL back to your site (Hashnode copies also keep the post's SEO title, description, and original publish date); Substack has no canonical setting, so its drafts open with an "Originally published at" link. You publish Substack drafts in its editor.
+- **Search engines and site rules:** every deploy that pushes pages asks Bing, Yandex, and the other [IndexNow](https://www.indexnow.org) engines to crawl them, once each page answers HTTP 200 (Google reads your sitemap instead). An optional `site_rules.json` in your `DATA_DIR` makes blog posts meet your site's own standards before they go live: tags from your taxonomy, links to related posts or episodes, and a call-to-action link, with a warning when a post has no code, formula, or measured number.
 - **Instagram posts:** approved images go to your Instagram professional account as feed posts, converted to JPEG and staged on your R2 domain for Meta to fetch. A one-time login saves a never-expiring Page token in its own 0600 file. Carousels, Stories, and Reels are planned.
 - **Content management:** agents can list what's on Instagram, YouTube, dev.to, and Substack and remove one item you named at a time: delete an Instagram post, YouTube video, or Substack post or draft (permanent), or unpublish a dev.to article back to draft (dev.to's API can't delete). Each removal checks the item is yours first, has a dry run, and is logged with what was removed.
 - **YouTube Shorts:** uploads that are square or vertical and up to 3 minutes become Shorts; with `expect_short`, the engine measures the clip first (ffprobe, rotation-aware) and refuses one that would land as a regular video.
 - **YouTube thumbnails and episode art:** your agent renders the art; the engine sets the headline in your show's fonts and colors (auto-fitted, clear of the duration badge, under 2 MB) and pushes it to YouTube after approval. The same art and headline also become the episode's square icon in Apple Podcasts, Spotify, and other apps (2048 px, with your show's wordmark), published with the episode; `REQUIRE_EPISODE_IMAGE=true` makes it mandatory.
-- **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X, Instagram, and YouTube engagement for the show's own posts and videos, dev.to and Substack reach for the blog posts the engine cross-posted, or your own) feed a local SQLite store, an offline HTML dashboard (an overview plus a tab per platform with every collected number, filtered by range or a stretch you drag across the timeline), and MCP tools agents can query.
+- **Audience metrics:** pluggable collectors (OP3 downloads, Cloudflare audio traffic, X, Instagram, and YouTube engagement for the show's own posts and videos, dev.to, Hashnode, and Substack reach for the blog posts the engine cross-posted, or your own) feed a local SQLite store, an offline HTML dashboard (an overview plus a tab per platform with every collected number, filtered by range or a stretch you drag across the timeline), and MCP tools agents can query.
 - **Safety:** see the list below; checks run before any upload.
 - **Backups:** incremental, to a private Hugging Face dataset.
 
@@ -230,11 +231,13 @@ An agent can misread a prompt; it can't get past code. The rules that matter are
 | [Descript](https://www.descript.com) | Staging episodes straight from a Descript export (chapters from markers) | Export the transcript as Markdown; see ADOPTING. |
 | X developer app + [xurl](https://github.com/xdevplatform/xurl) | `podcast_post_to_x` and X metrics for those posts | An app in the [X developer portal](https://developer.x.com) (read and write, OAuth 2.0); X bills API use. Steps in ADOPTING. |
 | Instagram professional account (Business or Creator) + a Meta app | `podcast_post_to_instagram`: image posts to the show's Instagram, and metrics for those posts | A [Meta developer](https://developers.facebook.com) app; a never-expiring Page token for the Facebook Page linked to the account (or a Unified login token); your own account needs no App Review. Saved by `python -m exporters.instagram login`. Steps in ADOPTING. |
-| [dev.to](https://dev.to) API key | `podcast_crosspost_to_devto`: companion blog posts as dev.to drafts | Generate a key under dev.to → Settings → Extensions; needs a website (`SITE_MODE=astro`) for the canonical URL. Steps in ADOPTING. |
+| [dev.to](https://dev.to) API key | `podcast_crosspost_to_devto`: companion blog posts on dev.to, as drafts or live |
+| A [Hashnode](https://hashnode.com) publication on Pro or Growth + the [Hashnode CLI](https://www.npmjs.com/package/@hashnode/cli) | `podcast_crosspost_to_hashnode`, `podcast_list_hashnode_posts` / `podcast_delete_hashnode_post`, and Hashnode metrics for the copies | `hashnode login` once (or `HASHNODE_PAT` for unattended use), then `HASHNODE_PUBLICATION_HOST`; Hashnode's API needs a paid plan on the publication. Blog settings (SEO, About, navbar, domain, FAQ blocks, citation tracking) stay in its dashboard. Steps in ADOPTING. | Generate a key under dev.to → Settings → Extensions; needs a website (`SITE_MODE=astro`) for the canonical URL. Steps in ADOPTING. |
 | A [Substack](https://substack.com) publication | `podcast_crosspost_to_substack`: companion blog posts as Substack drafts; `podcast_draft_newsletter` / `podcast_send_newsletter`: original newsletter articles, drafted, then scheduled or sent | Substack has no official publishing API: this uses the community [python-substack](https://github.com/ma2za/python-substack) library and your browser session cookie, which controls the whole account and expires. Steps in ADOPTING. For episodes, Substack's own *Distribute to Substack* reads your feed, no engine changes needed. |
 | YouTube Data + Analytics APIs | `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, `podcast_list_youtube_videos` / `podcast_delete_youtube_video` (deleting needs the `youtube.force-ssl` scope), and YouTube metrics for the show's videos; ffmpeg's `ffprobe` for the optional Shorts check | A Google Cloud OAuth client ([Data API](https://developers.google.com/youtube/v3), [Analytics API](https://developers.google.com/youtube/analytics)). Custom thumbnails need a phone-verified channel. |
 | An image model your agent can call | Thumbnail art (the engine only sets the text) | Whatever your agent supports (e.g. via its own MCP or API tools); put fonts and colors in `DATA_DIR/templates/thumbnail_style.json`. |
 | [OP3](https://op3.dev) | Free, open download analytics (stats are public) | `USE_OP3_PREFIX=true` and a free API key. |
+| An [IndexNow](https://www.indexnow.org) key | Deploys ask Bing, Yandex, and other engines to crawl changed pages (`podcast_announce_urls` to retry) | Any 8-128 letters, digits, or dashes as `INDEXNOW_KEY`, served by your site at `/<key>.txt`; needs `SITE_MODE=astro`. |
 | Cloudflare analytics token | Audio-traffic metrics from the edge | A token with Analytics Read on the zone (newer dashboards: a policy scoped to the *Domain*). |
 | Hugging Face account | Private, incremental backups of audio and catalog | A private dataset; Hugging Face also offers an [MCP server](https://huggingface.co/settings/mcp). |
 
@@ -264,12 +267,13 @@ Every setting is documented inline in [`.env.example`](./.env.example).
 | Storage (required) | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_PUBLIC_DOMAIN`, optional `USE_OP3_PREFIX` |
 | Website | `SITE_MODE` (`none`/`astro`), `WEBSITE_PATH`, `WEBSITE_RSS_FILE`, `WEBSITE_EPISODES_DIR`, `WEBSITE_BLOG_DIR`, `WEBSITE_BRANCH`, `FEED_OBJECT_KEY` |
 | Show data | `DATA_DIR` (catalog, transcripts, templates, playbook, backups); `DATABASE_PATH` and `METRICS_DB_PATH` to move the two databases elsewhere (default: inside `DATA_DIR`) |
-| Publishing rules (optional) | `REQUIRE_EPISODE_IMAGE` (refuse new episodes without their own square art) |
-| Integrations (optional) | `DESCRIPT_API_BEARER` (or `DESCRIPT_API_KEY`), `YOUTUBE_TOKEN_PATH`, `FFPROBE_PATH` (Shorts check), `FFMPEG_PATH` (`podcast_make_gif`), `HF_BACKUP_REPO`, `THUMBNAIL_STYLE`, `DEFAULT_TAGS` |
+| Publishing rules (optional) | `REQUIRE_EPISODE_IMAGE` (refuse new episodes without their own square art); blog post rules live in `$DATA_DIR/templates/site_rules.json` (template in `examples/show-data/templates/`) |
+| Integrations (optional) | `DESCRIPT_API_BEARER` (or `DESCRIPT_API_KEY`), `YOUTUBE_TOKEN_PATH`, `FFPROBE_PATH` (Shorts check), `FFMPEG_PATH` (`podcast_make_gif`), `HF_BACKUP_REPO`, `THUMBNAIL_STYLE`, `DEFAULT_TAGS`, `INDEXNOW_KEY` (search-engine pings) |
 | X posting (optional) | `X_USERNAME`, `XURL_APP`, `XURL_PATH` (tokens stay in xurl's own auth file) |
+| Hashnode (optional) | `HASHNODE_PUBLICATION_HOST`, `HASHNODE_CLI_PATH` (the login stays in the Hashnode CLI) |
 | Instagram posting (optional) | `INSTAGRAM_USERNAME`, `INSTAGRAM_TOKEN_PATH` (token file written by `python -m exporters.instagram login`) |
-| Blog cross-posting (optional) | `BLOG_URL_TEMPLATE` (your blog post URL with `{slug}`), `DEVTO_API_KEY`, `SUBSTACK_PUBLICATION_URL`, `SUBSTACK_COOKIES_PATH` (cookie file written by `python -m exporters.substack_post login`) |
-| Metrics (optional) | `OP3_API_TOKEN` (+ `OP3_SHOW_UUID` to skip the lookup), `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID`, X via the posting setup (or `X_BEARER_TOKEN`), `X_LOOKBACK_DAYS`, Instagram via the posting setup, YouTube via `YOUTUBE_TOKEN_PATH` (+ `$DATA_DIR/youtube_videos.json`), dev.to and Substack via the cross-posting setup, `METRICS_SOURCES`, `METRICS_EXTRA_COLLECTORS`, `METRICS_BACKFILL_DAYS` |
+| Blog cross-posting (optional) | `BLOG_URL_TEMPLATE` (your blog post URL with `{slug}`), `BLOG_IMAGE_URL_TEMPLATE` (its preview image with `{slug}`, the cover of dev.to, Hashnode, and Substack copies), `DEVTO_API_KEY`, `SUBSTACK_PUBLICATION_URL`, `SUBSTACK_COOKIES_PATH` (cookie file written by `python -m exporters.substack_post login`) |
+| Metrics (optional) | `OP3_API_TOKEN` (+ `OP3_SHOW_UUID` to skip the lookup), `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ZONE_ID`, X via the posting setup (or `X_BEARER_TOKEN`), `X_LOOKBACK_DAYS`, Instagram via the posting setup, YouTube via `YOUTUBE_TOKEN_PATH` (+ `$DATA_DIR/youtube_videos.json`), dev.to, Hashnode, and Substack via the cross-posting setup, `METRICS_SOURCES`, `METRICS_EXTRA_COLLECTORS`, `METRICS_BACKFILL_DAYS` |
 
 There are no show values in the code: startup fails and lists any required variable that's missing. `PODCAST_SERVER_ENV_FILE=/path/to/show.env` selects a different config (one per show).
 
@@ -281,11 +285,11 @@ Keep `DATA_DIR` outside this checkout, ideally in its own private repo. [`exampl
 my-show-data/
 ├── PLAYBOOK.md               # your editorial voice, title rules, workflows (agents read this first)
 ├── DEPLOYMENT.md             # your infrastructure record: DNS, R2, website, backups, credential locations
-├── templates/                # social_long.txt, social_short.txt, thumbnail_style.json, fonts/
+├── templates/                # social_long.txt, social_short.txt, thumbnail_style.json, site_rules.json, crosspost_footer.md, fonts/
 ├── social/                   # logs of public actions and removals (*_deletions.jsonl, devto_unpublished.jsonl): x_posts.jsonl, instagram_posts.jsonl, devto_posts.jsonl, substack_posts.jsonl, substack_newsletters.jsonl, youtube_uploads.jsonl, youtube_thumbnails.jsonl
 ├── newsletters/              # original Substack newsletter articles, <slug>.md (title, subtitle, tags frontmatter)
 ├── youtube_videos.json       # optional: back-catalog videos → episodes, for YouTube metrics
-├── thumbnails/               # staged art, rendered thumbnails, and newsletter previews (<slug>-substack.png)
+├── thumbnails/               # thumbnail_art_templates/ (staged art), final_art/ (thumbnails, <slug>-substack.png previews), podcast_art/ (episode icons)
 ├── media/                    # staged GIFs and images for newsletters and blog posts (podcast_make_gif)
 ├── excluded_episodes.json    # episodes that must never be (re)published
 ├── transcripts/              # <slug>.txt
@@ -314,10 +318,10 @@ Agents should read [`AGENTS.md`](./AGENTS.md) and then your `PLAYBOOK.md`.
 | :--- | :--- |
 | Getting oriented | `podcast_capabilities` |
 | Catalog | `podcast_status`, `podcast_list_episodes`, `podcast_get_episode`, `podcast_inspect` |
-| Publishing | `podcast_stage_discovery`, `podcast_stage_from_descript`, `podcast_publish`, `podcast_update_episode`, `podcast_rebuild_feed`, `podcast_deploy_site`, `podcast_backup` |
+| Publishing | `podcast_stage_discovery`, `podcast_stage_from_descript`, `podcast_publish`, `podcast_update_episode`, `podcast_rebuild_feed`, `podcast_deploy_site`, `podcast_announce_urls`, `podcast_backup` |
 | Content | `podcast_create_blog`, `podcast_draft_social`, `podcast_stage_thumbnail`, `podcast_render_thumbnail`, `podcast_render_episode_art`, `podcast_render_newsletter_preview`, `podcast_make_gif` |
-| Distribution | `podcast_upload_media_asset`, `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, `podcast_post_to_x`, `podcast_post_to_instagram`, `podcast_crosspost_to_devto`, `podcast_crosspost_to_substack`, `podcast_draft_newsletter`, `podcast_pull_newsletter`, `podcast_send_newsletter`, `podcast_unschedule_newsletter` |
-| Content management | `podcast_list_instagram_posts`, `podcast_delete_instagram_post`, `podcast_list_youtube_videos`, `podcast_delete_youtube_video`, `podcast_list_devto_articles`, `podcast_unpublish_devto_article`, `podcast_list_substack_posts`, `podcast_delete_substack_post` |
+| Distribution | `podcast_upload_media_asset`, `podcast_publish_to_youtube`, `podcast_set_youtube_thumbnail`, `podcast_post_to_x`, `podcast_post_to_instagram`, `podcast_crosspost_to_devto`, `podcast_crosspost_to_hashnode`, `podcast_crosspost_to_substack`, `podcast_draft_newsletter`, `podcast_pull_newsletter`, `podcast_send_newsletter`, `podcast_unschedule_newsletter` |
+| Content management | `podcast_list_instagram_posts`, `podcast_delete_instagram_post`, `podcast_list_youtube_videos`, `podcast_delete_youtube_video`, `podcast_list_devto_articles`, `podcast_unpublish_devto_article`, `podcast_list_hashnode_posts`, `podcast_delete_hashnode_post`, `podcast_list_substack_posts`, `podcast_delete_substack_post` |
 | Metrics | `podcast_metrics_collect`, `podcast_metrics_summary`, `podcast_episode_metrics`, `podcast_metrics_report` |
 
 ## Common Commands
@@ -341,8 +345,9 @@ The engine refuses to:
 - **Publish unrelated website work**: deploys commit only generated files, only from `WEBSITE_BRANCH`.
 - **Publish broken downloads**: episodes whose audio isn't in R2 are left out of the feed and pages.
 - **Upload arbitrary files** to the public bucket, or overwrite existing (immutably cached) objects.
-- **Leak credentials**: downloads are https-only, the Descript token is sent only to Descript hosts, the dev.to key only to dev.to, the Substack session cookie and the Instagram token stay in their own 0600 files (the doctor fails if others can read them), the Instagram token is sent only to Meta, in a header, and a user token pasted at login is swapped for the Page token and never stored, and X and YouTube tokens stay in their own CLIs' or OAuth files.
-- **Publish cross-posts for you**: dev.to and Substack copies are created as unpublished drafts (Substack never emails subscribers from the engine), and a blog post that already has a draft (logged, or found on the account) is never sent again.
+- **Leak credentials**: downloads are https-only, the Descript token is sent only to Descript hosts, the dev.to key only to dev.to, the Hashnode login stays in the Hashnode CLI, the Substack session cookie and the Instagram token stay in their own 0600 files (the doctor fails if others can read them), the Instagram token is sent only to Meta, in a header, and a user token pasted at login is swapped for the Page token and never stored, and X and YouTube tokens stay in their own CLIs' or OAuth files.
+- **Publish cross-posts you didn't ask for**: Substack copies are always unpublished drafts (Substack never emails subscribers from the engine), dev.to and Hashnode copies are drafts unless `publish=true`, and a blog post that already has a copy (logged, or found on the account) is never sent again.
+- **Ship a blog post below your standards**: posts that miss their discovery brief or your `site_rules.json` are refused when written and again when deployed, including posts written by hand.
 - **Upload local files to Substack**: Substack drafts accept only https images, because the library would otherwise upload any image path found on disk.
 - **Attach arbitrary files**: X media, Instagram images, and YouTube thumbnails accept only image/video types within each platform's size and shape limits, checked before any upload.
 - **Post to the wrong Instagram account or twice**: a token saved for another account than `INSTAGRAM_USERNAME` is refused, and the same image with the same caption returns the logged post instead of a second one.
@@ -361,7 +366,8 @@ The engine refuses to:
 | `core.doctor`: domain resolves publicly but not locally | Your resolver cached an old "no such host" answer; it clears on its own. |
 | Doctor says a metrics source is ready, but collection fails | The doctor checks settings, not live access. The run's message says what to fix, e.g. Cloudflare `does not have permission ... zone.analytics.read` (add a token policy scoped to the zone/domain with Analytics Read) or YouTube `API has not been used in project ...` (enable YouTube Analytics API in that Cloud project). |
 | `podcast_crosspost_to_substack`: "Substack sign-in failed" | The session cookie expired or you signed out of Substack. Run `uv run python -m exporters.substack_post login` with a fresh cookie value. Any other Substack error may mean its private API changed; check for a newer python-substack release. |
-| `podcast_crosspost_to_devto` or `_substack` returns `exists` | A draft of that post is already there (logged, or found on the account). To make a fresh one, delete the old draft and remove the slug's line from `$DATA_DIR/social/devto_posts.jsonl` or `substack_posts.jsonl`. |
+| `podcast_crosspost_to_devto`, `_hashnode`, or `_substack` returns `exists` | A copy of that post is already there (logged, or found on the account). To make a fresh one, delete the old copy and remove the slug's line from `$DATA_DIR/social/devto_posts.jsonl`, `hashnode_posts.jsonl`, or `substack_posts.jsonl`. |
+| Hashnode tools say `FORBIDDEN` / "does not have an active Pro plan" | Hashnode's API only works for publications on Pro or Growth; upgrade under the blog's Billing. A "not logged in" error means run `hashnode login` again. |
 | `podcast_post_to_instagram`: "token is invalid, expired, or revoked" | The token expired or lost access (a password change or removed permission invalidates Page tokens; Unified login tokens follow their configuration's expiry). Get a new token as in ADOPTING and run `uv run python -m exporters.instagram login`. |
 | `podcast_post_to_instagram`: container `ERROR` | Instagram couldn't fetch the staged image from `R2_PUBLIC_DOMAIN`; check the domain resolves publicly (`core.doctor`). Nothing was published, so retrying is safe. |
 | "No discovery brief for '<slug>'" or "Discovery check failed" | Save the approved brief with `podcast_stage_discovery`, then fix the fields the message lists (e.g. put the primary phrase in the first 150 characters of the YouTube description). Nothing was published, so retrying is safe. Skip a check only with `discovery_override="<the human's reason>"`. |
@@ -375,11 +381,11 @@ The engine refuses to:
 
 ```
 podcast_server/
-├── core/                  # config, catalog (db), R2 storage, feed XML, site output + deploy, doctor and capabilities, discovery briefs and checks, episode transcript/chapters/art, thumbnail renderer, helpers
+├── core/                  # config, catalog (db), R2 storage, feed XML, site output + deploy, IndexNow pings, blog site rules, doctor and capabilities, discovery briefs and checks, episode transcript/chapters/art, thumbnail renderer, helpers
 ├── mcp_server/server.py   # the MCP tools, their annotations, and the connection instructions
 ├── importers/             # rss.py (any host, GUID-preserving), descript.py (staging)
-├── exporters/             # Astro pages, blog posts, social drafts, X and Instagram posting, dev.to and Substack drafts, YouTube upload + thumbnails
-├── metrics/               # collectors (OP3, Cloudflare, X, Instagram, YouTube, dev.to, Substack, plugins), store, analysis, dashboard (Chart.js in vendor/)
+├── exporters/             # Astro pages, blog posts, social drafts, X and Instagram posting, dev.to, Hashnode, and Substack cross-posts, YouTube upload + thumbnails
+├── metrics/               # collectors (OP3, Cloudflare, X, Instagram, YouTube, dev.to, Hashnode, Substack, plugins), store, analysis, dashboard (Chart.js in vendor/)
 ├── bin/                   # run-mcp.sh (MCP launcher), collect-metrics.sh (scheduler entry)
 ├── scripts/backup_to_hf.py
 ├── examples/show-data/    # template for your private DATA_DIR

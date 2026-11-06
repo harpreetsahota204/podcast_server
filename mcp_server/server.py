@@ -26,9 +26,16 @@ from core.site import deploy_site, rebuild_site
 from core.storage import R2StorageClient
 from core.gif import make_gif
 from core.thumbnail import generate_youtube_thumbnail, render_episode_art, render_newsletter_preview, render_thumbnail
-from exporters.blog_post import blog_post_path, check_blog_discovery, create_blog_post
+from core.indexnow import latest_announcement, start_announce
+from exporters.blog_post import (
+    blog_post_path,
+    check_blog_post,
+    check_existing_blog_post,
+    create_blog_post,
+    validate_faq,
+)
 # Imported as modules for the content-management tools: list/delete function names repeat across platforms.
-from exporters import devto, instagram, substack_post, youtube
+from exporters import devto, hashnode, instagram, substack_post, youtube
 from exporters.devto import crosspost_to_devto
 from exporters.instagram import PostType, post_to_instagram
 from exporters.social import draft_social_package
@@ -56,9 +63,11 @@ Rules that always apply:
 - Nothing goes public without explicit human approval of the exact content. Public tools: podcast_publish, \
 podcast_update_episode, podcast_deploy_site, podcast_post_to_x, podcast_post_to_instagram, \
 podcast_publish_to_youtube, podcast_set_youtube_thumbnail, podcast_delete_instagram_post, podcast_delete_youtube_video, \
-podcast_unpublish_devto_article, podcast_delete_substack_post, podcast_send_newsletter.
+podcast_crosspost_to_devto, podcast_unpublish_devto_article, podcast_crosspost_to_hashnode, \
+podcast_delete_hashnode_post, podcast_delete_substack_post, podcast_send_newsletter.
 - Removing content: list first, then remove only items the human named, one call per item, after a dry run they saw. \
-The podcast_delete_* tools are permanent; podcast_unpublish_devto_article only turns an article back into a draft.
+The podcast_delete_* tools are permanent (podcast_delete_hashnode_post too); podcast_unpublish_devto_article only \
+turns an article back into a draft.
 - Episode GUIDs and slugs are permanent, and excluded episodes stay excluded. When a tool refuses, report why; \
 never work around it.
 - If a public call fails, read {settings.data_dir / "social"}/*.jsonl before retrying, so nothing is posted twice.
@@ -67,8 +76,11 @@ never work around it.
 choose an episode by topic, recency, or title similarity. If the exact lookup finds nothing, say so and ask. Name the \
 matched episode (guest and slug) in your first reply, before drafting anything.
 - After publishing or editing an episode, run podcast_backup.
-- podcast_crosspost_to_devto and podcast_crosspost_to_substack only create unpublished drafts, and only for a blog \
-post already live on the site; the human publishes each draft on its platform.
+- Cross-posts are only for a blog post already live on the site. podcast_crosspost_to_substack only creates \
+unpublished drafts, which the human publishes. podcast_crosspost_to_devto and podcast_crosspost_to_hashnode create \
+a draft, or with publish=true put the copy live with a canonical URL to the site; the show playbook says which to use.
+- Deploys that push pages announce them to search engines (IndexNow) on their own; check the result's indexnow \
+status and retry a failed one with podcast_announce_urls.
 - Newsletters: podcast_draft_newsletter drafts $DATA_DIR/newsletters/<slug>.md on Substack; the human reviews the \
 draft. If they edited it in Substack, run podcast_pull_newsletter before changing the file, so their edits are kept. \
 podcast_send_newsletter schedules it (recommend this: podcast_unschedule_newsletter cancels it until it goes \
@@ -197,8 +209,20 @@ def podcast_create_blog(
     tags: list[str] | None = None,
     draft: bool = False,
     discovery_override: str | None = None,
+    faq: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Write a standalone companion blog post into the website's blog directory (astro mode only). Refuses when the title or description (50-160 characters, used as the meta description) misses the slug's discovery brief, unless discovery_override gives the human's reason."""
+    """Write a standalone companion blog post into the website's blog directory (astro mode only), with pubDate now (a rewrite keeps the original pubDate and adds updatedDate). faq (up to 10 {question, answer}) is saved in the frontmatter; cross-posts get it as an FAQ section. Refuses when the title or description (50-160 characters, used as the meta description) misses the slug's discovery brief, or, unless draft=true, when the post breaks the site's rules ($DATA_DIR/templates/site_rules.json: tags from the site's taxonomy, links to related posts or episodes, a call-to-action link), unless discovery_override gives the human's reason. Returns warnings (e.g. no code block, formula, or measured number) to pass on."""
+    # Run first for the warnings; create_blog_post repeats the same checks itself before writing.
+    warnings = check_blog_post(
+        slug,
+        title,
+        description,
+        tags or settings.default_tags,
+        content_markdown,
+        draft,
+        discovery_override,
+        len(validate_faq(faq)),
+    )
     output_path = create_blog_post(
         title=title,
         description=description,
@@ -207,12 +231,14 @@ def podcast_create_blog(
         tags=tags,
         draft=draft,
         discovery_override=discovery_override,
+        faq=faq,
     )
     return {
         "status": "created",
         "file_path": str(output_path),
         "slug": slug,
         "draft": draft,
+        "warnings": warnings,
         "discovery_override": override_reason(discovery_override),
     }
 
@@ -301,6 +327,7 @@ def podcast_publish(
     transcript_path: str | None = None,
     episode_image_path: str | None = None,
     discovery_override: str | None = None,
+    blog_faq: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """
     Publish a new episode end-to-end (only after human approval):
@@ -310,7 +337,8 @@ def podcast_publish(
     2. Uploads the MP3, plus the transcript (.vtt/.srt preferred by Apple, or .txt), a chapters file built
        from the show notes' timestamps, and square 1400-3000 px episode art, then inserts the catalog row
        with a new, permanent GUID.
-    3. Optionally writes a companion blog post (astro mode).
+    3. Optionally writes a companion blog post (astro mode); blog_faq (up to 10 {question, answer}) becomes its FAQ,
+       which a show whose site rules set min_faq_items requires.
     4. Rebuilds the feed (and episode pages) and deploys: R2 feed upload, or a scoped git push.
     """
     ep_slug = validate_slug(slug or slugify(title))
@@ -328,8 +356,12 @@ def podcast_publish(
         )
     override = gate("feed", ep_slug, discovery_override, lambda brief: check_feed(brief, title, description))
     writes_blog = bool(blog_content_markdown) and settings.site_mode == "astro"
+    blog_warnings: list[str] = []
     if writes_blog:
-        check_blog_discovery(ep_slug, blog_title or title, description, discovery_override)
+        blog_warnings = check_blog_post(
+            ep_slug, blog_title or title, description, tags or settings.default_tags,
+            blog_content_markdown or "", blog_draft, discovery_override, len(validate_faq(blog_faq)),
+        )
     assets = prepare_assets(transcript_path, episode_image_path, show_notes_markdown)
     audio_path = Path(audio_file_path).resolve()
     audio_meta = inspect_audio(audio_path)
@@ -381,6 +413,7 @@ def podcast_publish(
             tags=tags,
             draft=blog_draft,
             discovery_override=discovery_override,
+            faq=blog_faq,
         )
 
     with _open_catalog() as db:
@@ -403,6 +436,7 @@ def podcast_publish(
         "episode_pages_changed": site.get("episode_pages_changed"),
         "feed_url": site.get("feed_url", settings.podcast_feed_url),
         "companion_blog_path": str(blog_path) if blog_path else None,
+        "companion_blog_warnings": blog_warnings,
         "transcript_url": extras.get("transcript_url"),
         "chapters_url": extras.get("chapters_url"),
         "episode_image_url": extras.get("cover_image_url"),
@@ -442,13 +476,31 @@ def podcast_update_episode(
 
 
 @mcp.tool(annotations=PUBLIC_EDIT)
-def podcast_deploy_site(message: str, blog_slugs: list[str] | None = None) -> dict[str, Any]:
-    """Push the rebuilt feed and episode pages live (only after human approval). Astro mode: commits only engine-generated files on WEBSITE_BRANCH with `message` and pushes; blog_slugs adds posts written by podcast_create_blog. None mode: nothing to do. Use after podcast_update_episode or podcast_rebuild_feed, or to retry a publish whose git_deploy was skipped or failed."""
+def podcast_deploy_site(
+    message: str, blog_slugs: list[str] | None = None, discovery_override: str | None = None
+) -> dict[str, Any]:
+    """Push the rebuilt feed and episode pages live (only after human approval). Astro mode: commits only engine-generated files on WEBSITE_BRANCH with `message` and pushes; blog_slugs adds blog posts from the website's blog directory (written by podcast_create_blog or by hand). Each named post is checked first, like podcast_create_blog (discovery brief, and the site's rules unless it's a draft); a miss refuses the whole deploy unless discovery_override gives the human's reason. After a push, the changed pages are announced to search engines through IndexNow once they answer HTTP 200 (result: indexnow). None mode: nothing to do. Use after podcast_update_episode or podcast_rebuild_feed, or to retry a publish whose git_deploy was skipped or failed."""
     blog_paths = [blog_post_path(slug) for slug in blog_slugs or []]
     # deploy_paths skips missing files silently; a mistyped slug must fail loudly instead.
     if missing := [str(path) for path in blog_paths if not path.exists()]:
         raise FileNotFoundError(f"No blog post at: {', '.join(missing)}")
-    return deploy_site(message, blog_paths)
+    # Every check runs before the push, so one failing post leaves the site untouched.
+    blog_checks = [check_existing_blog_post(slug, discovery_override) for slug in blog_slugs or []]
+    return {
+        **deploy_site(message, blog_paths),
+        "blog_checks": blog_checks,
+        "discovery_override": override_reason(discovery_override),
+    }
+
+
+@mcp.tool(annotations=ADDITIVE_EXTERNAL)
+def podcast_announce_urls(urls: list[str] | None = None, check_only: bool = False) -> dict[str, Any]:
+    """Ask search engines to crawl website pages now through IndexNow (Bing, Yandex, and other participating engines; not Google, which reads the sitemap). Every deploy that pushes pages already does this on its own; use this tool to retry a failed or refused run, or for pages changed outside the engine. Runs in the background: each URL (https, on the site's own host) is checked until it answers HTTP 200, for up to about 17 minutes, then all live ones are submitted in one request and logged to $DATA_DIR/social/indexnow.jsonl. check_only=true returns the latest finished run instead. Needs INDEXNOW_KEY, served by the site at <site origin>/<key>.txt."""
+    if check_only:
+        return latest_announcement()
+    if not urls:
+        raise ValueError("Pass the page URLs to announce, or check_only=true for the latest run.")
+    return start_announce(urls)
 
 
 @mcp.tool(annotations=ADDITIVE_EXTERNAL)
@@ -524,7 +576,7 @@ def podcast_post_to_x(
     alt_text: str | None = None,
     discovery_override: str | None = None,
 ) -> dict[str, Any]:
-    """Post to X as the configured account (only after explicit human approval of the exact text and media). Attaches one optional image, GIF, or video, which needs alt_text (up to 1,000 characters) unless discovery_override gives the human's reason; dry_run checks everything without posting. Pass episode_slug when promoting an episode so the post's metrics are credited to it. Returns the post id and URL."""
+    """Post to X as the configured account (only after explicit human approval of the exact text and media). Attaches one optional image, GIF, or video, which needs alt_text (up to 1,000 characters); with episode_slug the text must name a phrase or entity from that episode's discovery brief; either check is skipped only when discovery_override gives the human's reason; dry_run checks everything without posting. Pass episode_slug when promoting an episode so the post's metrics are credited to it. Returns the post id and URL."""
     return post_to_x(
         text=text,
         media_path=media_path,
@@ -605,11 +657,41 @@ def podcast_delete_substack_post(post_id: int, dry_run: bool = False) -> dict[st
     return substack_post.delete_post(post_id=post_id, dry_run=dry_run)
 
 
-# Additive, not public: it only creates an unpublished draft, which the human publishes on dev.to.
-@mcp.tool(annotations=ADDITIVE_EXTERNAL)
+# Public: publish=true puts the copy live on dev.to. Safe to retry: an existing article is returned, never duplicated.
+@mcp.tool(annotations=PUBLIC_EDIT)
 def podcast_crosspost_to_devto(blog_slug: str, tags: list[str] | None = None, dry_run: bool = False, publish: bool = False) -> dict[str, Any]:
-    """Cross-post a published companion blog post (from podcast_publish, podcast_create_blog, or a standalone blog directory) to dev.to with a canonical URL back to the website (or the post's own `canonical` frontmatter, if it was first published elsewhere) and site-relative links made absolute. Up to 4 tags, lowercase letters and digits only. If publish=True, publishes immediately live; otherwise creates an unpublished draft. If an article of the post already exists, returns it instead of creating another, so retrying is safe. dry_run checks everything without calling dev.to."""
+    """Cross-post a blog post that is live on the website to dev.to with a canonical URL back to the website (or the post's own `canonical` frontmatter, if it was first published elsewhere) and site-relative links made absolute; the post's preview image (frontmatter `image` or BLOG_IMAGE_URL_TEMPLATE) becomes the cover when it's live. Up to 4 tags, lowercase letters and digits only. publish=true puts the article live on dev.to at once (the canonical URL keeps the site as the original); otherwise it's an unpublished draft the human publishes on dev.to. If an article of the post already exists, returns it instead of creating another, so retrying is safe. dry_run checks everything without calling dev.to."""
     return crosspost_to_devto(slug=blog_slug, tags=tags, dry_run=dry_run, publish=publish)
+
+
+# Public: publish=true puts the copy live on Hashnode. Safe to retry: an existing copy is returned, never duplicated.
+@mcp.tool(annotations=PUBLIC_EDIT)
+def podcast_crosspost_to_hashnode(
+    blog_slug: str,
+    tags: list[str] | None = None,
+    dry_run: bool = False,
+    publish: bool = False,
+    published_at: str | None = None,
+    series_id: str | None = None,
+    cover_image: str | None = None,
+) -> dict[str, Any]:
+    """Copy a blog post that is live on the website to the show's Hashnode publication (HASHNODE_PUBLICATION_HOST), through the logged-in Hashnode CLI. The copy keeps the site as the original: originalArticleURL is the canonical URL (or the post's own `canonical` frontmatter), the post's title and description become the SEO title, description, and subtitle, the slug is the same, site-relative links become absolute, the FAQ becomes a section, the show's cross-post footer is appended, the table of contents is on, and publishedAt is the post's pubDate (or published_at, ISO 8601; never in the future). tags adds Hashnode tag slugs (e.g. "machine-learning") to the post's own tags, 15 in total. series_id adds it to a series made in the Hashnode dashboard. The cover and social image default to the post's live preview image (frontmatter `image` or BLOG_IMAGE_URL_TEMPLATE); cover_image (https) overrides it. publish=true puts it live at once; otherwise it's an unpublished draft. If a copy of the post already exists, returns it instead of creating another, so retrying is safe. dry_run checks everything without calling Hashnode. Needs a Pro or Growth plan on the publication."""
+    return hashnode.crosspost_to_hashnode(
+        slug=blog_slug, tags=tags, dry_run=dry_run, publish=publish,
+        published_at=published_at, series_id=series_id, cover_image=cover_image,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY_EXTERNAL)
+def podcast_list_hashnode_posts(limit: int = 25, after: str | None = None) -> dict[str, Any]:
+    """List the Hashnode publication's posts, newest first (up to 50 per call): post id, title, slug, URL, canonical URL, date, and views. Pass the returned next_cursor as `after` for the next page; it's null on the last page."""
+    return hashnode.list_posts(limit=limit, after=after)
+
+
+@mcp.tool(annotations=PUBLIC_EDIT)
+def podcast_delete_hashnode_post(post_id: str, dry_run: bool = False) -> dict[str, Any]:
+    """Permanently remove one post from the Hashnode publication (only a post the human explicitly named; run with dry_run=true first and show what will go). Refuses ids that aren't in the configured publication. Hashnode's API can't restore a removed post. Logged to $DATA_DIR/social/hashnode_deletions.jsonl."""
+    return hashnode.delete_post(post_id=post_id, dry_run=dry_run)
 
 
 # Additive, not public: it only creates an unpublished draft, which the human publishes (and emails) on Substack.
@@ -682,8 +764,8 @@ def podcast_render_thumbnail(
     label: str | None = None,
     accent_line: int | None = -1,
 ) -> dict[str, Any]:
-    """Step 2 of a thumbnail: composites 1-4 headline lines (2-3 short words read best; don't repeat the title) and an optional small label onto the art, in the show's style ($DATA_DIR/templates/thumbnail_style.json). accent_line picks the highlighted line (default last; null for none). Writes DATA_DIR/thumbnails/<slug>-final.png (JPEG if over 2 MB). Show the result to the human before setting it."""
-    output = settings.thumbnails_dir / f"{validate_slug(slug)}-final.png"
+    """Step 2 of a thumbnail: composites 1-4 headline lines (2-3 short words read best; don't repeat the title) and an optional small label onto the art, in the show's style ($DATA_DIR/templates/thumbnail_style.json). accent_line picks the highlighted line (default last; null for none). Writes DATA_DIR/thumbnails/final_art/<slug>-final.png (JPEG if over 2 MB). Show the result to the human before setting it."""
+    output = settings.final_art_dir / f"{validate_slug(slug)}-final.png"
     return render_thumbnail(Path(base_image_path), headline_lines, output, label=label, accent_line=accent_line)
 
 
@@ -695,8 +777,8 @@ def podcast_render_episode_art(
     label: str | None = None,
     focus_x: float = 0.33,
 ) -> dict[str, Any]:
-    """Square episode art for podcast apps (the feed's per-episode image), from the same clean art and style as the thumbnail: a square crop centered at focus_x (0-1 of the art's width; raise it if the subject sits right of center), a dark fade across the bottom, the optional label, 1-4 headline lines (use the approved thumbnail headline), and the show's wordmark (`wordmark` in thumbnail_style.json, default the show title). Writes DATA_DIR/thumbnails/<slug>-episode.jpg (2048 px). Show it to the human, then pass it to podcast_publish as episode_image_path."""
-    output = settings.thumbnails_dir / f"{validate_slug(slug)}-episode.jpg"
+    """Square episode art for podcast apps (the feed's per-episode image), from the same clean art and style as the thumbnail: a square crop centered at focus_x (0-1 of the art's width; raise it if the subject sits right of center), a dark fade across the bottom, the optional label, 1-4 headline lines (use the approved thumbnail headline), and the show's wordmark (`wordmark` in thumbnail_style.json, default the show title). Writes DATA_DIR/thumbnails/podcast_art/<slug>-episode.jpg (2048 px). Show it to the human, then pass it to podcast_publish as episode_image_path."""
+    output = settings.podcast_art_dir / f"{validate_slug(slug)}-episode.jpg"
     return render_episode_art(Path(base_image_path), headline_lines, output, label=label, focus_x=focus_x)
 
 
@@ -711,8 +793,8 @@ def podcast_render_newsletter_preview(
     focus_y: float = 0.5,
     mirror: bool = False,
 ) -> dict[str, Any]:
-    """A newsletter's post preview (Substack thumbnail and social card) in the show's thumbnail style: 1456x1048 (14:10), with the label and 1-4 headline lines kept inside the band a 1200x630 social crop shows. Clean art without lettering works best (the show's brand art or a podcast_stage_thumbnail render); focus_x/focus_y (0-1) pick what stays in view, and mirror flips art whose subject sits on the headline side. Writes $DATA_DIR/thumbnails/<slug>-substack.png. Show it to the human, then set it as cover_image in the newsletter file."""
-    output = settings.thumbnails_dir / f"{validate_slug(slug)}-substack.png"
+    """A newsletter's post preview (Substack thumbnail and social card) in the show's thumbnail style: 1456x1048 (14:10), with the label and 1-4 headline lines kept inside the band a 1200x630 social crop shows. Clean art without lettering works best (the show's brand art or a podcast_stage_thumbnail render); focus_x/focus_y (0-1) pick what stays in view, and mirror flips art whose subject sits on the headline side. Writes $DATA_DIR/thumbnails/final_art/<slug>-substack.png. Show it to the human, then set it as cover_image in the newsletter file."""
+    output = settings.final_art_dir / f"{validate_slug(slug)}-substack.png"
     return render_newsletter_preview(
         Path(base_image_path), headline_lines, output,
         label=label, accent_line=accent_line, focus=(focus_x, focus_y), mirror=mirror,

@@ -20,6 +20,7 @@ BUILTIN_COLLECTORS: dict[str, str] = {
     "youtube": "metrics.collectors.youtube:YouTubeCollector",
     "devto": "metrics.collectors.devto:DevtoCollector",
     "substack": "metrics.collectors.substack:SubstackCollector",
+    "hashnode": "metrics.collectors.hashnode:HashnodeCollector",
 }
 
 

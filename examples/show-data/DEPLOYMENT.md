@@ -65,7 +65,9 @@ Last verified: <YYYY-MM-DD>
 
 ## Blog Cross-Posting
 
-- dev.to account: <username>; drafts logged to `social/devto_posts.jsonl`
+- dev.to account: <username>; articles logged to `social/devto_posts.jsonl`
+- Hashnode publication: <host> (plan: Pro or Growth); CLI at <path>, logged in as <username>; copies logged to `social/hashnode_posts.jsonl`
+- IndexNow key: <key> (public), served at `<site>/<key>.txt`; submissions logged to `social/indexnow.jsonl`
 - Substack publication: <URL>; drafts logged to `social/substack_posts.jsonl`; session cookie saved <date> (re-run `python -m exporters.substack_post login` when it expires)
 - Default dev.to tags / Substack email policy: <see PLAYBOOK §7>
 
@@ -120,7 +122,7 @@ How to restore: <short steps>
 | OP3 API token | `.env` | <read-only API key> |
 | Cloudflare analytics token | `.env` | <Analytics Read in a policy scoped to one zone/domain> |
 | X (posting + metrics) | <xurl auth file> | <app name; scopes> |
-| dev.to API key | `.env` (`DEVTO_API_KEY`) | <cross-posting drafts + metrics> |
+| dev.to API key | `.env` (`DEVTO_API_KEY`) | <cross-posting + metrics> |
 | Instagram access token | `INSTAGRAM_TOKEN_PATH` (mode 600) | <Page or system-user token; whole-account posting; written by `login`> |
 | Substack session cookie | `SUBSTACK_COOKIES_PATH` (mode 600) | <whole-account access; expires; written by `login`> |
 | Agent(s) operating the show | <agent name, where its MCP config and briefing live> | |

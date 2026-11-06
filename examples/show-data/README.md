@@ -13,6 +13,8 @@ echo "DATA_DIR=$HOME/my-show-data" >> /path/to/podcast_server/.env
 | `DEPLOYMENT.md` | Your infrastructure record: DNS (including email records), R2, website wiring, backups, where credentials live, pending items. Fill it in as you set things up. |
 | `templates/social_*.txt` | Social post templates (`{hook}`, `{specs}`, `{guest_name}`, `{link}`, `{title}`) |
 | `templates/thumbnail_style.json` + `templates/fonts/` | YouTube thumbnail look: fonts, colors, fade, text box (template in this folder) |
+| `templates/crosspost_footer.md` | Optional Markdown appended to dev.to and Hashnode copies (who you are, links); `{original_url}` becomes the post's canonical URL (template in this folder) |
+| `templates/site_rules.json` | Optional rules every live blog post must meet: allowed tags, related-page links, call-to-action links, evidence warning (template in this folder) |
 | `excluded_episodes.json` | Slugs/GUIDs that must never be (re)published. Delete the example entry. |
 | `transcripts/` | `<slug>.txt` transcripts |
 | `catalog.db` | Created on first run. Don't commit it; back it up with `scripts/backup_to_hf.py`. |

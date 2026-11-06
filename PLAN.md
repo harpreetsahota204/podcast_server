@@ -25,17 +25,19 @@ Podcast hosting services charge monthly for object storage, a database table, an
 | `core/db.py` | Catalog schema, insert semantics, exclusion list, triggers. |
 | `core/storage.py` | Streaming multipart uploads/downloads; mirroring that records R2's actual byte length. |
 | `core/feed_generator.py` | Pure RSS XML generation. |
-| `core/site.py` | Publishes the feed (R2 or website repo), syncs episode pages, scoped git deploy. |
+| `core/site.py` | Publishes the feed (R2 or website repo), syncs episode pages, scoped git deploy, then starts the IndexNow ping for the pages it pushed. |
+| `core/indexnow.py` | Maps changed website files to public URLs, waits (detached) until they answer 200, submits them to IndexNow, logs to `$DATA_DIR/social/indexnow.jsonl`. |
+| `core/site_rules.py` | Optional per-show blog rules (`$DATA_DIR/templates/site_rules.json`): allowed tags, related-page links, call-to-action links (refusals), evidence (warning). |
 | `core/doctor.py` | End-to-end setup check (PASS / OFF / WARN / FAIL per integration). |
 | `core/discovery.py` | Discovery briefs (`$DATA_DIR/discovery/<slug>.json`), per-channel checks, and `gate`, which every publish path calls before anything goes public (refuses unless `discovery_override` gives a reason). |
 | `core/episode_assets.py` | Transcript, chapters (Podcasting 2.0 JSON from the show notes), and episode art for a new episode: validated before the audio upload, uploaded under timestamped keys. |
 | `core/capabilities.py` | The doctor's checks grouped by channel (`ready` / `off` / `needs_attention` / `broken`, with the tools for each) plus requests no tool handles; served as `podcast_capabilities`. |
 | `core/thumbnail.py` | Thumbnail art prompts and the style-file headline renderer (Pillow): 16:9 for YouTube, and square 2048 px episode art (crop, bottom fade, headline, wordmark) for the feed. |
-| `core/jsonl.py` | Append-only logs of public actions (X and Instagram posts, deletions and unpublishes, dev.to and Substack drafts, YouTube uploads, thumbnail changes). |
+| `core/jsonl.py` | Append-only logs of public actions (X and Instagram posts, deletions and unpublishes, dev.to and Substack cross-posts, IndexNow submissions, YouTube uploads, thumbnail changes). |
 | `core/credentials.py` | Credential files kept outside `.env` (Substack cookie, Instagram token): written 0600, checked by the doctor. |
 | `importers/` | `rss.py` (any host, GUID-preserving), `descript.py` (staging, chapters). |
-| `exporters/` | Astro Markdown pages, blog posts, social templates, X posting (via xurl), Instagram posting (Graph API, media staged on R2), dev.to and Substack drafts (shared loader: `blog_post.crosspost_source`), YouTube. |
-| `metrics/` | Audience metrics: `collectors/` (OP3, Cloudflare, X, Instagram, YouTube, dev.to, Substack; plugins via `METRICS_EXTRA_COLLECTORS`), `store.py` (`metrics.db`), `analysis.py`, `report.py` (offline HTML dashboard), `collect.py` (CLI + scheduler entry). |
+| `exporters/` | Astro Markdown pages, blog posts, social templates, X posting (via xurl), Instagram posting (Graph API, media staged on R2), dev.to, Hashnode (via its CLI), and Substack cross-posts (shared loader: `blog_post.crosspost_source`, with the FAQ section and `with_footer`; blog checks: `blog_post.check_blog_post`), YouTube. |
+| `metrics/` | Audience metrics: `collectors/` (OP3, Cloudflare, X, Instagram, YouTube, dev.to, Hashnode, Substack; plugins via `METRICS_EXTRA_COLLECTORS`), `store.py` (`metrics.db`), `analysis.py`, `report.py` (offline HTML dashboard), `collect.py` (CLI + scheduler entry). |
 
 ### Metrics Pipeline
 
@@ -114,7 +116,11 @@ CREATE TABLE collection_runs (id, source, started_at, finished_at, status, windo
 | YouTube thumbnails: prompt staging, style-file renderer, setter with change log + dashboard markers | Done |
 | Episode art: square icon from the thumbnail art (`podcast_render_episode_art`), published with the episode; optional `REQUIRE_EPISODE_IMAGE` | Done |
 | Dashboard: Overview plus a tab per platform, every collected metric (running totals as trends), Chart.js inlined offline, range and measured-stretch filters across every chart and table | Done |
-| Blog cross-posting to dev.to: unpublished drafts with canonical URL, log + duplicate check | Done |
+| Blog cross-posting to dev.to: drafts or live (`publish=true`) with canonical URL, log + duplicate check | Done |
+| Search-engine pings: IndexNow submission of pages a deploy pushed, once they answer 200 (detached), retry tool, doctor key-file check | Done |
+| Blog site rules: per-show tags, related links, and call-to-action checks when a post is written and when it's deployed (hand-written posts included) | Done |
+| Blog cross-posting to Hashnode through its CLI: drafts or live, canonical URL, SEO fields, original publish date, tags, series; list and remove; views collector; doctor reports the AEO toolkit, `llms.txt`, and AI crawlers | Done |
+| Cross-post extras: blog `faq` frontmatter as an FAQ section on every copy; per-show footer on dev.to and Hashnode copies | Done |
 | Blog cross-posting to Substack: unpublished drafts via python-substack (private API), attribution line, https-only images, log + duplicate check | Done |
 | Metrics: dev.to and Substack collectors for cross-posted articles (from the cross-post logs) | Done |
 | Substack newsletters: original articles from `$DATA_DIR/newsletters/<slug>.md` drafted (discovery-checked, rewrites guarded against editor changes), then scheduled (cancellable) or sent at once with title confirmation; log, send-once guard, metrics | Done |

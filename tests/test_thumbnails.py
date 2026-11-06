@@ -141,7 +141,7 @@ class RenderTests(ThumbnailTestCase):
         staged = generate_youtube_thumbnail("dice bursting into curves", "ep-art")
         self.assertIn("right 40%", staged["prompt"])
         self.assertIn("no text", staged["prompt"])
-        self.assertEqual(staged["local_path"], str(settings.thumbnails_dir / "ep-art.png"))
+        self.assertEqual(staged["local_path"], str(settings.thumbnail_art_dir / "ep-art.png"))
 
 
 class EpisodeArtTests(ThumbnailTestCase):
